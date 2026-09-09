@@ -2,22 +2,33 @@
 
 Сгруппировано по приоритету. `[РЕШЕНО]` - закрыто; остальное открыто.
 
-Закрыто: A1 (каркас + IMAP + Maildir), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
+Закрыто: A1 (IMAP + Maildir + EWS), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
 
 Сверх списка добавлено: `max_fail_streak` - стоп-синк юзера после N ошибок
 подряд (снять: `db-resume-user`).
 
 ## Архитектура и расширяемость
 
-### A1. [РЕШЕНО - каркас] Вариативные источники синхронизации
+### A1. [РЕШЕНО] Вариативные источники синхронизации
 
-Введён пакет `internal/endpoint` с интерфейсами `Backend` (фабрика сессий) и
-`Endpoint` (`Select` / `ListIDs` / `FetchMeta` / `Open` / `Append` / `Close`).
-`syncer` работает только через них; `mailbox.Client` спрятан за IMAP-реализацией
-(`endpoint/imap.go`). Идентификатор письма и токен валидности - строки
-(`sync_msg_cache.msg_id TEXT`, `sync_endpoint.validity TEXT`; схема v2, кэш
-пересоздаётся при апгрейде). `config.Server.Type` - точка ветвления
-(`"" | "imap"`; прочее отвергается).
+Пакет `internal/endpoint`: `Backend` (фабрика сессий) + `Endpoint`
+(`Select` / `ListIDs` / `FetchMeta` / `Open` / `Append` / `Close`). `syncer`
+работает только через них. Реализации: `imap.go` (поверх `mailbox.Client`),
+`maildir.go`, `ews.go`. ID письма и токен валидности - строки. `config.Server.Type`
+(`"" | imap | maildir | ews`).
+
+EWS - что осталось доработать:
+
+- **Auth только Basic.** O365 его отключил - нужен OAuth2 (client credentials:
+  tenant/client_id/client_secret + скоуп `full_access_as_app`). NTLM для
+  старого on-prem - транспорт `go-ntlmssp`.
+- **INTERNALDATE не переносится** - `CreateItem` с `MimeContent` ставит текущую
+  дату; нужен extended MAPI property `PR_MESSAGE_DELIVERY_TIME` (0x0E060040).
+- **Флаги** - переносится только `\Seen` (через `<t:IsRead>` рядом с MimeContent,
+  best-effort; Exchange может игнорировать). `\Answered`/`\Flagged` - нет.
+- `FindItem` без сортировки/CONDSTORE-аналога; при >1e5 писем в папке пагинация
+  по Offset может «съезжать» - для инкрементального режима это не критично
+  (ListIDs даёт полный набор).
 
 **Maildir** - `endpoint/maildir.go` готов: `type: maildir`, `root` - шаблон пути
 с `%u`/`%n`/`%d`; ID = unique-часть имени файла (стабильна при смене флагов /
@@ -26,13 +37,9 @@ new↔cur); validity - константа (расхождения самолеч
 mtime; SPECIAL-USE токены → `.Sent`/`.Drafts`/…; подпапки создаются при Select.
 Тесты: unit + Maildir↔Maildir + IMAP↔Maildir (полный и инкрементальный синк).
 
-Осталось:
-
-- **EWS** - `endpoint/ews.go`: ID = `ItemId`, validity = константа или SyncState;
-  проверить добавление `X-Imapsync-Hash` через `CreateItem` c MIME.
-- Maildir: не читает `subscriptions` / не поддерживает `:1,` info-суффикс и
-  `;2,` (не-Linux разделитель); `Open` читает файл целиком (для локального диска
-  ок). `dovecot-uidvalidity` не используется.
+Maildir - что осталось: не читает `subscriptions`; не поддерживает `:1,`
+info-суффикс и `;2,` (не-Linux разделитель); `Open` читает файл целиком (для
+локального диска ок); `dovecot-uidvalidity` не используется.
 
 ### A2. REST-API для управления (идея, оценка)
 

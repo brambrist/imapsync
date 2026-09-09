@@ -68,9 +68,11 @@ func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecur
 		return newIMAPBackend(srv, dialTimeout, ioTimeout, insecureTLS, fetchBatch), nil
 	case config.EndpointMaildir:
 		return newMaildirBackend(srv), nil
+	case config.EndpointEWS:
+		return newEWSBackend(srv, ioTimeout, insecureTLS, fetchBatch), nil
 	default:
-		return nil, fmt.Errorf("тип эндпоинта %q не поддерживается (%q или %q)",
-			srv.Type, config.EndpointIMAP, config.EndpointMaildir)
+		return nil, fmt.Errorf("тип эндпоинта %q не поддерживается (%q, %q, %q)",
+			srv.Type, config.EndpointIMAP, config.EndpointMaildir, config.EndpointEWS)
 	}
 }
 

@@ -36,6 +36,7 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 const (
 	EndpointIMAP    = "imap"    // IMAP-сервер с мастер-доступом (по умолчанию)
 	EndpointMaildir = "maildir" // локальный Maildir/Maildir++ на диске
+	EndpointEWS     = "ews"     // Exchange Web Services (SOAP), имперсонация
 )
 
 // Server описывает один конец синхронизации.
@@ -44,13 +45,17 @@ const (
 //     с authzid (authcid+пароль - мастер, authzid - целевой юзер).
 //   - type: maildir - Root: шаблон пути к Maildir пользователя. Плейсхолдеры:
 //     %u (весь user_a/user_b), %n (локальная часть до @), %d (домен).
+//   - type: ews - EWSUrl (или Host), MasterUser/MasterPass - сервисная учётка с
+//     ролью ApplicationImpersonation; имперсонация через SOAP-заголовок
+//     ExchangeImpersonation (PrimarySmtpAddress = user_a/user_b). Auth: Basic.
 type Server struct {
-	Type       string `yaml:"type"` // "" | "imap" | "maildir"
+	Type       string `yaml:"type"` // "" | "imap" | "maildir" | "ews"
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
-	MasterUser string `yaml:"master_user"` // authcid для SASL PLAIN
+	MasterUser string `yaml:"master_user"` // authcid для SASL PLAIN / Basic для EWS
 	MasterPass string `yaml:"master_pass"` // пароль мастер-учётки
 	Root       string `yaml:"root"`        // шаблон пути к Maildir (type: maildir)
+	EWSUrl     string `yaml:"ews_url"`     // полный URL EWS (иначе https://<host>/EWS/Exchange.asmx)
 }
 
 // FolderPair - явная пара имён папок на сервере A и на сервере B.
@@ -326,16 +331,29 @@ func validateServer(name string, s Server) error {
 		if strings.TrimSpace(s.Root) == "" {
 			return fmt.Errorf("%s: type maildir - не задан root (шаблон пути к Maildir)", name)
 		}
+	case EndpointEWS:
+		if strings.TrimSpace(s.EWSUrl) == "" && strings.TrimSpace(s.Host) == "" {
+			return fmt.Errorf("%s: type ews - нужен ews_url или host", name)
+		}
+		if strings.TrimSpace(s.MasterUser) == "" || strings.TrimSpace(s.MasterPass) == "" {
+			return fmt.Errorf("%s: type ews - нужны master_user/master_pass (сервисная учётка с ApplicationImpersonation)", name)
+		}
 	default:
-		return fmt.Errorf("%s: тип %q не поддерживается (%q или %q)", name, s.Type, EndpointIMAP, EndpointMaildir)
+		return fmt.Errorf("%s: тип %q не поддерживается (%q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS)
 	}
 	return nil
 }
 
 // Addr возвращает человекочитаемый адрес конца для логов.
 func (s Server) Addr() string {
-	if s.Type == EndpointMaildir {
+	switch s.Type {
+	case EndpointMaildir:
 		return "maildir:" + s.Root
+	case EndpointEWS:
+		if s.EWSUrl != "" {
+			return s.EWSUrl
+		}
+		return "ews:" + s.Host
 	}
 	return fmt.Sprintf("%s:%d", s.Host, s.Port)
 }

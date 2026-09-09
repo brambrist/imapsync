@@ -155,17 +155,25 @@ hash_header: "X-Imapsync-Hash"
 Параметры серверов, тайминги и `workers` всегда берутся из YAML. Списки папок и
 юзеров могут храниться в SQLite.
 
-**Тип конца.** По умолчанию оба конца - IMAP. Можно указать `type: maildir` и
-`root` - шаблон пути к Maildir пользователя (`%u` - весь `user_a`/`user_b`,
-`%n` - до `@`, `%d` - домен). Тип задаётся независимо на каждой стороне, так что
-IMAP↔Maildir тоже работает (например миграция с Dovecot на новый сервер):
+**Тип конца** (`type`) задаётся независимо на каждой стороне - `imap` (по
+умолчанию), `maildir` или `ews`. Смешанные пары работают (миграция Dovecot →
+новый IMAP, Exchange → Dovecot и т.п.).
+
+- `maildir` - `root`: шаблон пути к Maildir (`%u` - весь `user_a`/`user_b`,
+  `%n` - до `@`, `%d` - домен).
+- `ews` - `ews_url` (или `host` → `https://<host>/EWS/Exchange.asmx`),
+  `master_user`/`master_pass` - сервисная учётка с ролью `ApplicationImpersonation`;
+  имперсонация через SOAP-заголовок `ExchangeImpersonation`. Auth: **только Basic**
+  (для O365 нужен OAuth2 - см. `TECHDEBT.md`). `\Seen` переносится, `INTERNALDATE` -
+  нет.
 
 ```yaml
 server_a:
   type: maildir
   root: /var/vmail/%d/%n/Maildir
 server_b:
-  host: mail-new.corp.ru
+  type: ews
+  ews_url: https://exch.corp.ru/EWS/Exchange.asmx
   master_user: svc_sync
   master_pass: "SECRET"
 ```
@@ -174,6 +182,11 @@ Maildir: ID письма = unique-часть имени файла (стабил
 `new`↔`cur`); флаги `\Seen \Answered \Flagged \Draft` ↔ буквы `S R F D` в
 `:2,`-суффиксе; `INTERNALDATE` = mtime файла; подпапки (`.Sent` и т.п.)
 создаются автоматически.
+
+EWS: ID = `ItemId`; метаданные из `InternetMessageHeaders` + `IsRead`; тело -
+`GetItem` с `IncludeMimeContent`; запись - `CreateItem` с `MimeContent`.
+Имена папок → distinguished folder id (`sentitems`, `inbox`, …) или поиск по
+`DisplayName` через `FindFolder`.
 
 ### Конфигурация из SQLite
 
@@ -292,8 +305,8 @@ case — один полный пере-фетч. Если сервер подд
 cmd/imapsync/        точка входа: диспетчер подкоманд, демон, сигналы
 config/              YAML-конфиг: загрузка, валидация, дефолты
 internal/
-  endpoint/          абстракция «конец синхронизации» (Backend/Endpoint);
-                     imap.go (поверх mailbox), maildir.go; EWS - потом
+  endpoint/          абстракция «конец синхронизации» (Backend/Endpoint):
+                     imap.go (поверх mailbox), maildir.go, ews.go
   mailbox/           IMAP-примитивы поверх go-imap: connect+TLS (ctx-aware),
                      master-login, resolve-folder, fetch/UID SEARCH, append; хеши
   dedup/             мультиключевой индекс папки, вычисление дельты

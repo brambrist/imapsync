@@ -15,10 +15,15 @@ server_b:
   master_user: svc_sync
   master_pass: "SECRET_B"
 
-# Пример конца типа maildir (тип задаётся на каждой стороне независимо):
+# Тип задаётся на каждой стороне независимо (смешанные пары работают):
 # server_a:
 #   type: maildir
 #   root: /var/vmail/%d/%n/Maildir   # %u - весь user_a/user_b, %n - до @, %d - домен
+# server_b:
+#   type: ews
+#   ews_url: https://exch.corp.ru/EWS/Exchange.asmx   # или просто host
+#   master_user: svc_sync           # учётка с ролью ApplicationImpersonation
+#   master_pass: "SECRET"           # auth: только Basic (для O365 нужен OAuth2)
 
 # Источник списков folders/users: "yaml" (по умолчанию) или "sqlite".
 # При "sqlite" секции folders/users ниже необязательны и игнорируются,

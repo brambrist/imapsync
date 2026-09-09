@@ -36,7 +36,7 @@ func TestWithHeaderIdempotent(t *testing.T) {
 }
 
 func TestNewBackendRejectsUnknownType(t *testing.T) {
-	if _, err := NewBackend(config.Server{Type: "ews", Host: "x"}, 0, 0, false, 10); err == nil {
+	if _, err := NewBackend(config.Server{Type: "pop3", Host: "x"}, 0, 0, false, 10); err == nil {
 		t.Error("ожидали ошибку для неизвестного типа эндпоинта")
 	}
 	if _, err := NewBackend(config.Server{Host: "x"}, 0, 0, false, 10); err != nil {
