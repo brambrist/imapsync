@@ -20,10 +20,12 @@ func runDaemon(cfg *config.Config) error {
 
 	logf := log.Printf
 
-	// БД нужна для инкрементальной сверки и/или записи статусов юзеров.
-	// Эксклюзивная блокировка: два демона на одну БД побьют состояние.
+	// БД нужна для инкрементальной сверки, статусов юзеров и ограничения по
+	// серии ошибок. Эксклюзивная блокировка: два демона на одну БД побьют состояние.
+	needDB := cfg.StateCache || cfg.Source == config.SourceSQLite ||
+		(cfg.MaxFailStreak > 0 && cfg.SQLitePath != "")
 	var st *store.Store
-	if cfg.StateCache || cfg.Source == config.SourceSQLite {
+	if needDB {
 		var err error
 		st, err = store.OpenExclusive(cfg.SQLitePath)
 		if err != nil {
@@ -34,6 +36,11 @@ func runDaemon(cfg *config.Config) error {
 			logf("инкрементальная сверка включена, кэш: %s (full_resync каждые %s)",
 				cfg.SQLitePath, cfg.FullResyncEvery.Std())
 		}
+		if cfg.MaxFailStreak > 0 {
+			logf("остановка синка юзера после %d ошибок подряд (сброс: imapsync db-resume-user)", cfg.MaxFailStreak)
+		}
+	} else if cfg.MaxFailStreak > 0 {
+		logf("внимание: max_fail_streak=%d задан, но нет БД (нужен sqlite_path или state_cache) - ограничение не действует", cfg.MaxFailStreak)
 	}
 
 	coll := stats.New()

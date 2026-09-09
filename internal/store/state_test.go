@@ -3,6 +3,8 @@ package store
 import (
 	"testing"
 	"time"
+
+	"imapsync/config"
 )
 
 func TestEndpointCacheRoundTrip(t *testing.T) {
@@ -97,31 +99,119 @@ func TestOpenExclusiveBlocksSecondProcess(t *testing.T) {
 	st2.Close()
 }
 
-func TestUserStatusPreservesLastOKOnError(t *testing.T) {
+func TestRecordRunStreaksAndHistory(t *testing.T) {
 	st := openTemp(t)
 
-	ok := UserStatus{LastRun: time.Unix(1000, 0), LastOK: time.Unix(1000, 0), Status: "ok", CopiedAToB: 5}
-	if err := st.SaveUserStatus("u1", ok); err != nil {
-		t.Fatal(err)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	fail := UserStatus{LastRun: time.Unix(2000, 0), Status: "error", Errors: 3, LastError: "бах"}
-	if err := st.SaveUserStatus("u1", fail); err != nil {
-		t.Fatal(err)
+	must(st.RecordRun("u1", RunResult{At: time.Unix(1000, 0), Status: "ok", CopiedAToB: 5}))
+	must(st.RecordRun("u1", RunResult{At: time.Unix(2000, 0), Status: "error", Errors: 3, LastError: "бах-1"}))
+	must(st.RecordRun("u1", RunResult{At: time.Unix(3000, 0), Status: "error", Errors: 1, LastError: "бах-2"}))
+
+	got := mustStatus(t, st, "u1")
+	if got.Status != "error" || got.LastError != "бах-2" {
+		t.Errorf("текущий статус: %+v", got)
+	}
+	if got.FailStreak != 2 {
+		t.Errorf("fail_streak = %d, ожидали 2", got.FailStreak)
+	}
+	if !got.FailSince.Equal(time.Unix(2000, 0)) {
+		t.Errorf("fail_since = %v, ожидали момент первой ошибки (2000)", got.FailSince)
+	}
+	if !got.LastOK.Equal(time.Unix(1000, 0)) {
+		t.Errorf("last_ok затёрт: %v", got.LastOK)
 	}
 
+	// восстановление
+	must(st.RecordRun("u1", RunResult{At: time.Unix(4000, 0), Status: "ok", CopiedBToA: 2}))
+	got = mustStatus(t, st, "u1")
+	if got.Status != "ok" || got.FailStreak != 0 || !got.FailSince.IsZero() {
+		t.Errorf("после восстановления: %+v", got)
+	}
+	if !got.LastOK.Equal(time.Unix(4000, 0)) {
+		t.Errorf("last_ok не обновлён: %v", got.LastOK)
+	}
+
+	// история
+	runs, err := st.UserRuns("u1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 4 || !runs[0].At.Equal(time.Unix(4000, 0)) || !runs[3].At.Equal(time.Unix(1000, 0)) {
+		t.Errorf("история: %+v", runs)
+	}
+}
+
+func TestUserRunRetention(t *testing.T) {
+	st := openTemp(t)
+	for i := 1; i <= userRunKeep+25; i++ {
+		if err := st.RecordRun("u", RunResult{At: time.Unix(int64(i)*60, 0), Status: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, err := st.UserRuns("u", userRunKeep*2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != userRunKeep {
+		t.Errorf("после ретенции хранится %d прогонов, ожидали %d", len(runs), userRunKeep)
+	}
+}
+
+func TestDeleteAndForget(t *testing.T) {
+	st := openTemp(t)
+	_ = st.UpsertUser(config.User{Name: "u1", UserA: "a", UserB: "b"}, true)
+	_ = st.UpsertFolderPair(config.FolderPair{A: "Sent", B: "S"})
+	_ = st.PutCachedMsgs("u1", "Sent\x00S", "a", []CachedMsg{{Uid: 1, Surrogate: "x"}})
+	_ = st.SaveEndpoint("u1", "Sent\x00S", "a", 1, time.Time{})
+	_ = st.RecordRun("u1", RunResult{At: time.Unix(1, 0), Status: "ok"})
+
+	if err := st.ForgetUser("u1"); err != nil {
+		t.Fatal(err)
+	}
+	ep, msgs, _ := st.LoadEndpoint("u1", "Sent\x00S", "a")
+	if ep.Exists || len(msgs) != 0 {
+		t.Errorf("ForgetUser не очистил состояние: %+v", ep)
+	}
+	if runs, _ := st.UserRuns("u1", 10); len(runs) != 0 {
+		t.Errorf("ForgetUser не очистил историю: %+v", runs)
+	}
+	// сам юзер остался
+	if us, _ := st.ListUsers(); len(us) != 1 {
+		t.Errorf("ForgetUser не должен удалять из users: %+v", us)
+	}
+
+	if err := st.DeleteUser("u1"); err != nil {
+		t.Fatal(err)
+	}
+	if us, _ := st.AllUsers(); len(us) != 0 {
+		t.Errorf("DeleteUser не сработал: %+v", us)
+	}
+	if err := st.DeleteFolderPair(config.FolderPair{A: "Sent", B: "S"}); err != nil {
+		t.Fatal(err)
+	}
+	if fps, _ := st.ListFolderPairs(); len(fps) != 0 {
+		t.Errorf("DeleteFolderPair не сработал: %+v", fps)
+	}
+	if err := st.DeleteUser("missing"); err == nil {
+		t.Error("DeleteUser несуществующего должен вернуть ошибку")
+	}
+}
+
+func mustStatus(t *testing.T, st *Store, name string) UserStatus {
+	t.Helper()
 	all, err := st.UserStatuses()
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := all["u1"]
-	if got.Status != "error" || got.Errors != 3 || got.LastError != "бах" {
-		t.Errorf("статус ошибки не записан: %+v", got)
+	s, ok := all[name]
+	if !ok {
+		t.Fatalf("нет статуса для %q", name)
 	}
-	if !got.LastOK.Equal(time.Unix(1000, 0)) {
-		t.Errorf("last_ok затёрт при ошибке: %v", got.LastOK)
-	}
-	if !got.LastRun.Equal(time.Unix(2000, 0)) {
-		t.Errorf("last_run не обновлён: %v", got.LastRun)
-	}
+	return s
 }

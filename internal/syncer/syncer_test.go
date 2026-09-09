@@ -270,6 +270,59 @@ func TestSyncUserIncrementalWithCache(t *testing.T) {
 	}
 }
 
+func TestMaxFailStreakStopsUser(t *testing.T) {
+	cert := selfSignedCert(t)
+	srvA := startIMAP(t, cert)
+	srvB := startIMAP(t, cert)
+	appendMsg(t, srvA, "x", "mfs-a@corp")
+
+	st, err := store.Open(t.TempDir() + "/mfs.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// накапливаем серию ошибок
+	for range 3 {
+		if err := st.RecordRun("u", store.RunResult{At: time.Now(), Status: "error", Errors: 1, LastError: "боль"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &config.Config{
+		ServerA: srvA, ServerB: srvB,
+		InsecureTLS:    true,
+		FetchBatchSize: 10,
+		HashHeader:     "X-Imapsync-Hash",
+		DialTimeout:    config.Duration(5 * time.Second),
+		Folders:        []config.FolderPair{{A: "INBOX", B: "INBOX"}},
+		MaxFailStreak:  3,
+	}
+	usr := config.User{Name: "u", UserA: "username", UserB: "username"}
+
+	coll := stats.New()
+	coll.BeginCycle()
+	NewWithState(cfg, coll, t.Logf, st).SyncUser(context.Background(), usr)
+
+	if rep := coll.Snapshot(); len(rep.Users) != 0 {
+		t.Fatalf("остановленный юзер всё равно обработан: %+v", rep.Users)
+	}
+	if got := inboxMessageIDs(t, srvB); len(got) != 1 { // только исходное письмо
+		t.Errorf("B изменился, хотя синк должен быть остановлен: %v", got)
+	}
+
+	// снимаем стоп
+	if err := st.ResumeUser("u"); err != nil {
+		t.Fatal(err)
+	}
+	coll2 := stats.New()
+	coll2.BeginCycle()
+	NewWithState(cfg, coll2, t.Logf, st).SyncUser(context.Background(), usr)
+	if rep := coll2.Snapshot(); len(rep.Users) != 1 || rep.Total.CopiedAToB != 1 {
+		t.Errorf("после resume синк не пошёл: %+v", rep)
+	}
+}
+
 func TestIncrementalFullResync(t *testing.T) {
 	cert := selfSignedCert(t)
 	srvA := startIMAP(t, cert)

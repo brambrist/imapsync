@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	_ "modernc.org/sqlite" // драйвер "sqlite" (чистый Go, без CGO)
 
@@ -36,20 +38,32 @@ type Store struct {
 	lock *os.File // != nil при OpenExclusive; держит flock до Close
 }
 
+// poolSize - размер пула соединений к БД. WAL допускает конкурентное чтение;
+// запись сериализуется через busy_timeout, а не через единственное соединение.
+const poolSize = 8
+
+// dsn собирает строку подключения с прагмами, применяемыми к каждому соединению.
+func dsn(path string) string {
+	q := url.Values{}
+	q.Add("_pragma", "busy_timeout(10000)")
+	q.Add("_pragma", "journal_mode(WAL)")
+	q.Add("_pragma", "synchronous(NORMAL)")
+	q.Add("_pragma", "foreign_keys(1)")
+	return "file:" + path + "?" + q.Encode()
+}
+
 // Open открывает (создавая при необходимости) БД по пути path и применяет схему.
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("путь к sqlite не задан")
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("открытие sqlite %s: %w", path, err)
 	}
-	db.SetMaxOpenConns(1) // sqlite: сериализуем доступ, избегаем "database is locked"
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("настройка sqlite %s: %w", path, err)
-	}
+	db.SetMaxOpenConns(poolSize)
+	db.SetMaxIdleConns(poolSize)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("создание схемы sqlite %s: %w", path, err)

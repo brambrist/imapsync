@@ -64,3 +64,8 @@ retry_backoff: 5s          # базовая пауза, растёт экспо�
 state_cache: false
 # sqlite_path: /var/lib/imapsync/imapsync.db
 full_resync_every: 24h     # как часто делать полный пере-скан папки (отлов дрейфа кэша)
+
+# После стольких прогонов подряд с ошибкой синк юзера останавливается
+# (снять: `imapsync db-resume-user -name X` или db-forget-user). Требует БД
+# (state_cache или source: sqlite). Отрицательное значение отключает.
+max_fail_streak: 10

@@ -98,6 +98,11 @@ type Config struct {
 	// папки (сброс кэша эндпоинта) для отлова расхождений. 0 - никогда.
 	FullResyncEvery Duration `yaml:"full_resync_every"`
 
+	// MaxFailStreak - после стольких прогонов подряд с ошибкой синк юзера
+	// останавливается (до `imapsync db-resume-user` или db-forget-user).
+	// Требует БД (state_cache или source: sqlite). Отрицательное - отключить.
+	MaxFailStreak int `yaml:"max_fail_streak"`
+
 	// HashHeader - имя кастомного заголовка, куда пишется суррогатный хеш
 	// при APPEND, чтобы находить уже скопированные письма на следующих проходах.
 	HashHeader string `yaml:"hash_header"`
@@ -122,6 +127,7 @@ const (
 	defaultConnectRetries  = 3
 	defaultRetryBackoff    = Duration(5 * time.Second)
 	defaultFullResyncEvery = Duration(24 * time.Hour)
+	defaultMaxFailStreak   = 10
 )
 
 // Load читает конфиг из файла, применяет дефолты и валидирует.
@@ -215,6 +221,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.FullResyncEvery == 0 {
 		c.FullResyncEvery = defaultFullResyncEvery
+	}
+	if c.MaxFailStreak == 0 {
+		c.MaxFailStreak = defaultMaxFailStreak
 	}
 }
 

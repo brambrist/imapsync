@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"imapsync/config"
 )
 
 // stateSchema - таблицы кэша инкрементальной сверки. Живут в том же файле, что и
@@ -34,17 +36,34 @@ CREATE TABLE IF NOT EXISTS sync_msg_cache (
     PRIMARY KEY (user_name, pair, side, uid)
 );
 CREATE TABLE IF NOT EXISTS user_status (
-    user_name   TEXT PRIMARY KEY,
-    last_run_at INTEGER NOT NULL,
-    last_ok_at  INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL,          -- ok | error
+    user_name    TEXT PRIMARY KEY,
+    last_run_at  INTEGER NOT NULL,
+    last_ok_at   INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL,          -- ok | error
+    copied_a_b   INTEGER NOT NULL DEFAULT 0,
+    copied_b_a   INTEGER NOT NULL DEFAULT 0,
+    skipped_dup  INTEGER NOT NULL DEFAULT 0,
+    errors       INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT NOT NULL DEFAULT '',
+    fail_since   INTEGER NOT NULL DEFAULT 0,  -- начало текущей серии ошибок; 0 = сейчас ok
+    fail_streak  INTEGER NOT NULL DEFAULT 0   -- сколько прогонов подряд с ошибкой
+);
+CREATE TABLE IF NOT EXISTS user_run (
+    user_name   TEXT NOT NULL,
+    run_at      INTEGER NOT NULL,
+    status      TEXT NOT NULL,
     copied_a_b  INTEGER NOT NULL DEFAULT 0,
     copied_b_a  INTEGER NOT NULL DEFAULT 0,
     skipped_dup INTEGER NOT NULL DEFAULT 0,
     errors      INTEGER NOT NULL DEFAULT 0,
-    last_error  TEXT NOT NULL DEFAULT ''
+    last_error  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (user_name, run_at)
 );
+CREATE INDEX IF NOT EXISTS user_run_by_user ON user_run (user_name, run_at DESC);
 `
+
+// userRunKeep - сколько последних прогонов хранить в user_run на юзера.
+const userRunKeep = 200
 
 // Endpoint - сохранённое состояние одной стороны пары папок.
 type Endpoint struct {
@@ -214,11 +233,10 @@ func PairKey(folderA, folderB string) string {
 	return folderA + "\x00" + folderB
 }
 
-// UserStatus - результат последнего прохода синка по пользователю.
-type UserStatus struct {
-	LastRun    time.Time
-	LastOK     time.Time // время последнего прохода без ошибок; нулевое - не переписывать
-	Status     string    // "ok" | "error"
+// RunResult - итог одного прохода синка по пользователю.
+type RunResult struct {
+	At         time.Time
+	Status     string // "ok" | "error"
 	CopiedAToB int64
 	CopiedBToA int64
 	SkippedDup int64
@@ -226,17 +244,57 @@ type UserStatus struct {
 	LastError  string
 }
 
-// SaveUserStatus пишет статус последнего прохода. last_ok_at обновляется только
-// при успешном проходе (LastOK не нулевой), иначе прежнее значение сохраняется.
-func (s *Store) SaveUserStatus(user string, st UserStatus) error {
-	var lastOK int64
-	if !st.LastOK.IsZero() {
-		lastOK = st.LastOK.Unix()
+// UserStatus - текущее состояние пользователя (последний прогон + серия ошибок).
+type UserStatus struct {
+	LastRun    time.Time
+	LastOK     time.Time // время последнего прохода без ошибок
+	Status     string    // "ok" | "error"
+	CopiedAToB int64
+	CopiedBToA int64
+	SkippedDup int64
+	Errors     int64
+	LastError  string
+	FailSince  time.Time // начало текущей серии ошибок; нулевое = сейчас ok
+	FailStreak int64     // сколько прогонов подряд завершились ошибкой
+}
+
+// RecordRun фиксирует итог прохода: пишет строку в историю user_run,
+// обновляет текущий статус user_status (включая серию ошибок) и подрезает
+// историю до userRunKeep последних записей.
+func (s *Store) RecordRun(user string, r RunResult) error {
+	if r.Status == "" {
+		r.Status = "ok"
 	}
-	_, err := s.db.Exec(`
+	at := r.At.Unix()
+	failed := r.Status == "error"
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx user_run (%s): %w", user, err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(`
+		INSERT INTO user_run (user_name, run_at, status, copied_a_b, copied_b_a, skipped_dup, errors, last_error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_name, run_at) DO UPDATE SET
+			status=excluded.status, copied_a_b=excluded.copied_a_b, copied_b_a=excluded.copied_b_a,
+			skipped_dup=excluded.skipped_dup, errors=excluded.errors, last_error=excluded.last_error`,
+		user, at, r.Status, r.CopiedAToB, r.CopiedBToA, r.SkippedDup, r.Errors, r.LastError); err != nil {
+		return fmt.Errorf("запись user_run (%s): %w", user, err)
+	}
+
+	var lastOK, failSince, failStreak int64
+	if !failed {
+		lastOK = at
+	} else {
+		failSince = at // при первом же прогоне-ошибке; при последующих - COALESCE ниже
+		failStreak = 1
+	}
+	if _, err := tx.Exec(`
 		INSERT INTO user_status
-			(user_name, last_run_at, last_ok_at, status, copied_a_b, copied_b_a, skipped_dup, errors, last_error)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(user_name, last_run_at, last_ok_at, status, copied_a_b, copied_b_a, skipped_dup, errors, last_error, fail_since, fail_streak)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_name) DO UPDATE SET
 			last_run_at = excluded.last_run_at,
 			last_ok_at  = CASE WHEN excluded.last_ok_at > 0 THEN excluded.last_ok_at ELSE user_status.last_ok_at END,
@@ -245,21 +303,50 @@ func (s *Store) SaveUserStatus(user string, st UserStatus) error {
 			copied_b_a  = excluded.copied_b_a,
 			skipped_dup = excluded.skipped_dup,
 			errors      = excluded.errors,
-			last_error  = excluded.last_error`,
-		user, st.LastRun.Unix(), lastOK, st.Status,
-		st.CopiedAToB, st.CopiedBToA, st.SkippedDup, st.Errors, st.LastError)
-	if err != nil {
+			last_error  = excluded.last_error,
+			fail_since  = CASE WHEN excluded.status='error'
+			                   THEN CASE WHEN user_status.fail_since>0 THEN user_status.fail_since ELSE excluded.last_run_at END
+			                   ELSE 0 END,
+			fail_streak = CASE WHEN excluded.status='error' THEN user_status.fail_streak + 1 ELSE 0 END`,
+		user, at, lastOK, r.Status, r.CopiedAToB, r.CopiedBToA, r.SkippedDup, r.Errors, r.LastError, failSince, failStreak); err != nil {
 		return fmt.Errorf("запись user_status (%s): %w", user, err)
 	}
-	return nil
+
+	// подрезаем историю
+	if _, err := tx.Exec(`
+		DELETE FROM user_run WHERE user_name=? AND run_at NOT IN (
+			SELECT run_at FROM user_run WHERE user_name=? ORDER BY run_at DESC LIMIT ?
+		)`, user, user, userRunKeep); err != nil {
+		return fmt.Errorf("чистка user_run (%s): %w", user, err)
+	}
+	return tx.Commit()
 }
+
+func scanUserStatus(sc interface{ Scan(...any) error }) (string, UserStatus, error) {
+	var name string
+	var lastRun, lastOK, failSince int64
+	var st UserStatus
+	if err := sc.Scan(&name, &lastRun, &lastOK, &st.Status,
+		&st.CopiedAToB, &st.CopiedBToA, &st.SkippedDup, &st.Errors, &st.LastError,
+		&failSince, &st.FailStreak); err != nil {
+		return "", UserStatus{}, err
+	}
+	st.LastRun = time.Unix(lastRun, 0)
+	if lastOK > 0 {
+		st.LastOK = time.Unix(lastOK, 0)
+	}
+	if failSince > 0 {
+		st.FailSince = time.Unix(failSince, 0)
+	}
+	return name, st, nil
+}
+
+const userStatusCols = `user_name, last_run_at, last_ok_at, status,
+	copied_a_b, copied_b_a, skipped_dup, errors, last_error, fail_since, fail_streak`
 
 // UserStatuses возвращает статусы всех пользователей, по которым он записан.
 func (s *Store) UserStatuses() (map[string]UserStatus, error) {
-	rows, err := s.db.Query(`
-		SELECT user_name, last_run_at, last_ok_at, status,
-		       copied_a_b, copied_b_a, skipped_dup, errors, last_error
-		FROM user_status`)
+	rows, err := s.db.Query(`SELECT ` + userStatusCols + ` FROM user_status`)
 	if err != nil {
 		return nil, fmt.Errorf("чтение user_status: %w", err)
 	}
@@ -267,18 +354,119 @@ func (s *Store) UserStatuses() (map[string]UserStatus, error) {
 
 	out := make(map[string]UserStatus)
 	for rows.Next() {
-		var name string
-		var lastRun, lastOK int64
-		var st UserStatus
-		if err := rows.Scan(&name, &lastRun, &lastOK, &st.Status,
-			&st.CopiedAToB, &st.CopiedBToA, &st.SkippedDup, &st.Errors, &st.LastError); err != nil {
+		name, st, err := scanUserStatus(rows)
+		if err != nil {
 			return nil, fmt.Errorf("разбор строки user_status: %w", err)
-		}
-		st.LastRun = time.Unix(lastRun, 0)
-		if lastOK > 0 {
-			st.LastOK = time.Unix(lastOK, 0)
 		}
 		out[name] = st
 	}
 	return out, rows.Err()
+}
+
+// UserStatusOf возвращает статус одного пользователя. Второе значение - найден ли.
+func (s *Store) UserStatusOf(user string) (UserStatus, bool, error) {
+	_, st, err := scanUserStatus(s.db.QueryRow(
+		`SELECT `+userStatusCols+` FROM user_status WHERE user_name=?`, user))
+	if err == sql.ErrNoRows {
+		return UserStatus{}, false, nil
+	}
+	if err != nil {
+		return UserStatus{}, false, fmt.Errorf("чтение user_status (%s): %w", user, err)
+	}
+	return st, true, nil
+}
+
+// ResumeUser сбрасывает серию ошибок пользователя (fail_streak/fail_since),
+// не трогая кэш и историю. Останавливает действие max_fail_streak.
+func (s *Store) ResumeUser(user string) error {
+	res, err := s.db.Exec(
+		`UPDATE user_status SET fail_streak=0, fail_since=0 WHERE user_name=?`, strings.TrimSpace(user))
+	if err != nil {
+		return fmt.Errorf("сброс серии ошибок (%s): %w", user, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("по юзеру %q нет статуса (нечего сбрасывать)", user)
+	}
+	return nil
+}
+
+// UserRuns возвращает последние прогоны пользователя (новые первыми).
+func (s *Store) UserRuns(user string, limit int) ([]RunResult, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`
+		SELECT run_at, status, copied_a_b, copied_b_a, skipped_dup, errors, last_error
+		FROM user_run WHERE user_name=? ORDER BY run_at DESC LIMIT ?`, user, limit)
+	if err != nil {
+		return nil, fmt.Errorf("чтение user_run (%s): %w", user, err)
+	}
+	defer rows.Close()
+
+	var out []RunResult
+	for rows.Next() {
+		var r RunResult
+		var at int64
+		if err := rows.Scan(&at, &r.Status, &r.CopiedAToB, &r.CopiedBToA, &r.SkippedDup, &r.Errors, &r.LastError); err != nil {
+			return nil, fmt.Errorf("разбор строки user_run: %w", err)
+		}
+		r.At = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUser убирает пользователя из таблицы users.
+func (s *Store) DeleteUser(name string) error {
+	res, err := s.db.Exec(`DELETE FROM users WHERE name=?`, strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("удаление пользователя %q: %w", name, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("пользователь %q не найден", name)
+	}
+	return nil
+}
+
+// DeleteFolderPair убирает пару папок.
+func (s *Store) DeleteFolderPair(fp config.FolderPair) error {
+	res, err := s.db.Exec(`DELETE FROM folder_pairs WHERE folder_a=? AND folder_b=?`,
+		strings.TrimSpace(fp.A), strings.TrimSpace(fp.B))
+	if err != nil {
+		return fmt.Errorf("удаление пары папок %q/%q: %w", fp.A, fp.B, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("пара папок %q/%q не найдена", fp.A, fp.B)
+	}
+	return nil
+}
+
+// ForgetUser удаляет всё состояние пользователя (кэш, статус, история). Сам
+// пользователь в таблице users остаётся - следующий цикл начнёт синк с нуля.
+func (s *Store) ForgetUser(name string) error {
+	name = strings.TrimSpace(name)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx forget (%s): %w", name, err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	for _, q := range []string{
+		`DELETE FROM sync_msg_cache WHERE user_name=?`,
+		`DELETE FROM sync_endpoint  WHERE user_name=?`,
+		`DELETE FROM user_status    WHERE user_name=?`,
+		`DELETE FROM user_run       WHERE user_name=?`,
+	} {
+		if _, err := tx.Exec(q, name); err != nil {
+			return fmt.Errorf("очистка состояния %q: %w", name, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// Vacuum сжимает файл БД (после массовых удалений).
+func (s *Store) Vacuum() error {
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("VACUUM: %w", err)
+	}
+	return nil
 }

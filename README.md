@@ -176,8 +176,16 @@ imapsync db-import-yaml -db imapsync.db -config config.yaml
 # импорт из CSV
 imapsync db-import-csv  -db imapsync.db -users users.csv -folders folders.csv
 
-# посмотреть содержимое
-imapsync db-list -db imapsync.db
+# посмотреть содержимое / историю
+imapsync db-list    -db imapsync.db
+imapsync db-history -db imapsync.db -user ivanov
+
+# управление
+imapsync db-remove-user   -db imapsync.db -name ivanov
+imapsync db-remove-folder -db imapsync.db -a Sent -b "Отправленные"
+imapsync db-forget-user   -db imapsync.db -name ivanov   # сброс состояния, синк с нуля
+imapsync db-resume-user   -db imapsync.db -name ivanov   # снять стоп после серии ошибок
+imapsync db-vacuum        -db imapsync.db
 ```
 
 Форматы CSV (строки с `#` и строка-заголовок пропускаются):
@@ -237,10 +245,20 @@ case — один полный пере-фетч. Если сервер подд
 одну БД не запустятся.
 
 **Статус синка в БД.** Когда открыта БД (при `state_cache: true` **или**
-`source: sqlite`), после каждого прохода по юзеру пишется строка в
-`user_status`: время прогона, время последнего успешного прогона, статус
-(`ok`/`error`), счётчики копий/дублей/ошибок и текст последней ошибки. Видно
-через `imapsync db-list`.
+`source: sqlite`, **или** `max_fail_streak > 0` с заданным `sqlite_path`), после
+каждого прохода по юзеру пишется строка в `user_status` (время прогона, время
+последнего успеха, статус, счётчики, последняя ошибка, серия ошибок подряд) и в
+`user_run` — историю прогонов (последние 200 на юзера). Смотреть:
+`imapsync db-list` (текущее), `imapsync db-history -user X` (история).
+
+**Остановка проблемного юзера.** После `max_fail_streak` (дефолт 10) прогонов
+подряд с ошибкой синк этого юзера прекращается — чтобы битый ящик не жёг
+ресурсы каждый цикл. Возобновить: `imapsync db-resume-user -name X` (сброс
+только счётчика) или `imapsync db-forget-user -name X` (плюс сброс кэша).
+
+**Управление БД:** `db-remove-user` / `db-remove-folder` (удалить),
+`db-forget-user` (сбросить кэш+статус+историю юзера, синк с нуля),
+`db-vacuum` (сжать файл).
 
 Локальная БД состояния при этом не является источником истины по письмам —
 только кэшем; источник истины сами папки плюс заголовок `X-Imapsync-Hash`.

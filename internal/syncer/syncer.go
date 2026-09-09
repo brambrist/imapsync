@@ -56,10 +56,33 @@ var copyableFlags = map[string]bool{
 // incremental - true, если для этого синкера включён режим кэша состояния.
 func (s *Syncer) incremental() bool { return s.cfg.StateCache && s.state != nil }
 
+// userStopped - достиг ли юзер лимита ошибок подряд (max_fail_streak).
+// Если да - логируем и пропускаем его в этом цикле.
+func (s *Syncer) userStopped(name string) bool {
+	if s.state == nil || s.cfg.MaxFailStreak <= 0 {
+		return false
+	}
+	st, ok, err := s.state.UserStatusOf(name)
+	if err != nil {
+		s.logf("юзер %s: не удалось проверить серию ошибок: %v", name, err)
+		return false
+	}
+	if ok && st.FailStreak >= int64(s.cfg.MaxFailStreak) {
+		s.logf("юзер %s: синк остановлен - %d ошибок подряд (с %s), сброс: imapsync db-resume-user -name %s",
+			name, st.FailStreak, st.FailSince.Format("2006-01-02 15:04:05"), name)
+		return true
+	}
+	return false
+}
+
 // SyncUser обрабатывает пользователя целиком. Ошибки не пробрасываются наружу -
 // они логируются с контекстом и попадают в статистику юзера; прерывание по
 // ctx фиксируется как ошибка.
 func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
+	if s.userStopped(u.Name) {
+		return
+	}
+
 	us := s.stats.BeginUser(u.Name)
 	defer func() {
 		s.stats.EndUser(us)
@@ -463,9 +486,8 @@ func (s *Syncer) persistStatus(name string, us *stats.UserStats) {
 		return
 	}
 	r := us.Report()
-	now := time.Now()
-	st := store.UserStatus{
-		LastRun:    now,
+	run := store.RunResult{
+		At:         time.Now(),
 		Status:     "ok",
 		CopiedAToB: r.CopiedAToB,
 		CopiedBToA: r.CopiedBToA,
@@ -474,11 +496,9 @@ func (s *Syncer) persistStatus(name string, us *stats.UserStats) {
 		LastError:  r.LastErr,
 	}
 	if r.Errors > 0 {
-		st.Status = "error"
-	} else {
-		st.LastOK = now
+		run.Status = "error"
 	}
-	if err := s.state.SaveUserStatus(name, st); err != nil {
+	if err := s.state.RecordRun(name, run); err != nil {
 		s.logf("юзер %s: не удалось записать статус в БД: %v", name, err)
 	}
 }

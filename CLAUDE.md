@@ -157,9 +157,14 @@ io_timeout: 5m             # таймаут на одну IMAP-операцию
 connect_retries: 3         # повторы подключения (0 = дефолт 3)
 retry_backoff: 5s
 full_resync_every: 24h     # при state_cache: полный пере-скан папки раз в N
+max_fail_streak: 10        # стоп-синк юзера после N ошибок подряд (нужна БД; <0 = выкл)
 fetch_batch_size: 200
 insecure_tls: false
 ```
+
+CLI управления БД: `db-remove-user`/`db-remove-folder`, `db-forget-user` (сброс
+кэша+статуса+истории), `db-resume-user` (снять стоп-синк), `db-history`,
+`db-vacuum`. История прогонов - `user_run` (ретенция 200/юзера).
 
 Имена в `folders` резолвятся через `mailbox.ResolveFolder`: точное имя →
 SPECIAL-USE токен (`\Sent`) → регистронезависимо. Демон при открытой БД берёт

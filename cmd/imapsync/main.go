@@ -38,6 +38,18 @@ func main() {
 		err = cmdDBImportCSV(args)
 	case "db-list":
 		err = cmdDBList(args)
+	case "db-remove-user":
+		err = cmdDBRemoveUser(args)
+	case "db-remove-folder":
+		err = cmdDBRemoveFolder(args)
+	case "db-forget-user":
+		err = cmdDBForgetUser(args)
+	case "db-resume-user":
+		err = cmdDBResumeUser(args)
+	case "db-history":
+		err = cmdDBHistory(args)
+	case "db-vacuum":
+		err = cmdDBVacuum(args)
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -60,11 +72,17 @@ func usage() {
 
 Использование:
   imapsync run -config cfg.yaml
-  imapsync db-add-user   -db x.db -name ivanov -a ivanov@a -b ivanov@b [-disabled]
-  imapsync db-add-folder -db x.db -a Sent -b "Отправленные"
-  imapsync db-import-yaml -db x.db -config cfg.yaml
-  imapsync db-import-csv  -db x.db [-users users.csv] [-folders folders.csv]
-  imapsync db-list       -db x.db
+  imapsync db-add-user     -db x.db -name ivanov -a ivanov@a -b ivanov@b [-disabled]
+  imapsync db-add-folder   -db x.db -a Sent -b "Отправленные"
+  imapsync db-import-yaml   -db x.db -config cfg.yaml
+  imapsync db-import-csv    -db x.db [-users users.csv] [-folders folders.csv]
+  imapsync db-list         -db x.db
+  imapsync db-history      -db x.db -user ivanov [-limit 20]
+  imapsync db-remove-user  -db x.db -name ivanov      (удаляет юзера + его состояние)
+  imapsync db-remove-folder -db x.db -a Sent -b "Отправленные"
+  imapsync db-forget-user  -db x.db -name ivanov      (сброс кэша/статуса, юзер остаётся)
+  imapsync db-resume-user  -db x.db -name ivanov      (сброс серии ошибок, снять стоп-синк)
+  imapsync db-vacuum       -db x.db
 
 CSV-форматы:
   users:   name,user_a,user_b[,enabled]   (enabled: 1/0, true/false; по умолчанию 1)

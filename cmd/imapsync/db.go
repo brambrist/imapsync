@@ -201,6 +201,103 @@ func parseBool(s string) bool {
 	}
 }
 
+func cmdDBRemoveUser(args []string) error {
+	var name *string
+	return withStore("db-remove-user", args, func(fs *flag.FlagSet) {
+		name = fs.String("name", "", "имя юзера")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.DeleteUser(*name); err != nil {
+			return err
+		}
+		if err := st.ForgetUser(*name); err != nil {
+			return err
+		}
+		fmt.Printf("юзер %q удалён (вместе с кэшем и историей)\n", *name)
+		return nil
+	})
+}
+
+func cmdDBRemoveFolder(args []string) error {
+	var a, b *string
+	return withStore("db-remove-folder", args, func(fs *flag.FlagSet) {
+		a = fs.String("a", "", "имя папки на сервере A")
+		b = fs.String("b", "", "имя папки на сервере B")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.DeleteFolderPair(config.FolderPair{A: *a, B: *b}); err != nil {
+			return err
+		}
+		fmt.Printf("пара папок %q/%q удалена\n", *a, *b)
+		return nil
+	})
+}
+
+func cmdDBResumeUser(args []string) error {
+	var name *string
+	return withStore("db-resume-user", args, func(fs *flag.FlagSet) {
+		name = fs.String("name", "", "имя юзера")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.ResumeUser(*name); err != nil {
+			return err
+		}
+		fmt.Printf("серия ошибок юзера %q сброшена, синк возобновится в следующем цикле\n", *name)
+		return nil
+	})
+}
+
+func cmdDBForgetUser(args []string) error {
+	var name *string
+	return withStore("db-forget-user", args, func(fs *flag.FlagSet) {
+		name = fs.String("name", "", "имя юзера")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.ForgetUser(*name); err != nil {
+			return err
+		}
+		fmt.Printf("состояние юзера %q сброшено (кэш, статус, история); следующий цикл начнёт синк с нуля\n", *name)
+		return nil
+	})
+}
+
+func cmdDBVacuum(args []string) error {
+	return withStore("db-vacuum", args, nil, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.Vacuum(); err != nil {
+			return err
+		}
+		fmt.Println("VACUUM выполнен")
+		return nil
+	})
+}
+
+func cmdDBHistory(args []string) error {
+	var name *string
+	var limit *int
+	return withStore("db-history", args, func(fs *flag.FlagSet) {
+		name = fs.String("user", "", "имя юзера")
+		limit = fs.Int("limit", 20, "сколько последних прогонов показать")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if *name == "" {
+			return fmt.Errorf("не задан -user")
+		}
+		runs, err := st.UserRuns(*name, *limit)
+		if err != nil {
+			return err
+		}
+		if len(runs) == 0 {
+			fmt.Printf("по юзеру %q прогонов не записано\n", *name)
+			return nil
+		}
+		fmt.Printf("последние прогоны юзера %q (%d):\n", *name, len(runs))
+		for _, r := range runs {
+			line := fmt.Sprintf("  %s  %-5s  A->B=%d B->A=%d дубли=%d ошибок=%d",
+				fmtTime(r.At), r.Status, r.CopiedAToB, r.CopiedBToA, r.SkippedDup, r.Errors)
+			if r.LastError != "" {
+				line += "  " + r.LastError
+			}
+			fmt.Println(line)
+		}
+		return nil
+	})
+}
+
 func cmdDBList(args []string) error {
 	return withStore("db-list", args, nil, cmdDBListRun)
 }
@@ -234,6 +331,9 @@ func cmdDBListRun(st *store.Store, _ *flag.FlagSet) error {
 			}
 			fmt.Printf("\n      A->B=%d B->A=%d дубли=%d ошибок=%d",
 				s.CopiedAToB, s.CopiedBToA, s.SkippedDup, s.Errors)
+			if s.FailStreak > 0 {
+				fmt.Printf("\n      ошибок подряд: %d, серия с %s", s.FailStreak, fmtTime(s.FailSince))
+			}
 			if s.LastError != "" {
 				fmt.Printf("\n      последняя ошибка: %s", s.LastError)
 			}
