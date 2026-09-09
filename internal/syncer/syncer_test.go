@@ -21,6 +21,7 @@ import (
 	"imapsync/config"
 	"imapsync/internal/mailbox"
 	"imapsync/internal/stats"
+	"imapsync/internal/store"
 )
 
 func TestFilterFlags(t *testing.T) {
@@ -171,5 +172,74 @@ func TestSyncUserConvergesBothSides(t *testing.T) {
 	rep2 := coll2.Snapshot()
 	if rep2.Total.CopiedAToB != 0 || rep2.Total.CopiedBToA != 0 {
 		t.Errorf("второй прогон скопировал лишнее: A->B=%d B->A=%d", rep2.Total.CopiedAToB, rep2.Total.CopiedBToA)
+	}
+}
+
+func TestSyncUserIncrementalWithCache(t *testing.T) {
+	cert := selfSignedCert(t)
+	srvA := startIMAP(t, cert)
+	srvB := startIMAP(t, cert)
+	appendMsg(t, srvA, "инкр A", "inc-a@corp")
+	appendMsg(t, srvB, "инкр B", "inc-b@corp")
+
+	st, err := store.Open(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		ServerA: srvA, ServerB: srvB,
+		InsecureTLS:    true,
+		FetchBatchSize: 10,
+		HashHeader:     "X-Imapsync-Hash",
+		DialTimeout:    config.Duration(5 * time.Second),
+		Folders:        []config.FolderPair{{A: "INBOX", B: "INBOX"}},
+		StateCache:     true,
+		SQLitePath:     "unused-in-test",
+	}
+	usr := config.User{Name: "u", UserA: "username", UserB: "username"}
+
+	// цикл 1
+	c1 := stats.New()
+	c1.BeginCycle()
+	NewWithState(cfg, c1, t.Logf, st).SyncUser(context.Background(), usr)
+
+	want := []string{"0000000@localhost/", "inc-a@corp", "inc-b@corp"}
+	if got := inboxMessageIDs(t, srvA); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("A = %v, ожидали %v", got, want)
+	}
+	if got := inboxMessageIDs(t, srvB); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("B = %v, ожидали %v", got, want)
+	}
+	if r := c1.Snapshot(); r.Total.CopiedAToB != 1 || r.Total.CopiedBToA != 1 || r.Total.Errors != 0 {
+		t.Fatalf("цикл 1: %+v (%+v)", r.Total, r.Users)
+	}
+
+	// кэш заполнен
+	pair := store.PairKey("INBOX", "INBOX")
+	uidv, msgs, err := st.LoadEndpoint("u", pair, "a")
+	if err != nil || uidv == 0 || len(msgs) != 2 {
+		t.Fatalf("кэш A: uidv=%d msgs=%d err=%v", uidv, len(msgs), err)
+	}
+
+	// статус записан
+	statuses, _ := st.UserStatuses()
+	if s := statuses["u"]; s.Status != "ok" || s.CopiedAToB != 1 || s.LastOK.IsZero() {
+		t.Errorf("user_status: %+v", s)
+	}
+
+	// цикл 2 - ничего не копируется
+	c2 := stats.New()
+	c2.BeginCycle()
+	NewWithState(cfg, c2, t.Logf, st).SyncUser(context.Background(), usr)
+	if r := c2.Snapshot(); r.Total.CopiedAToB != 0 || r.Total.CopiedBToA != 0 || r.Total.Errors != 0 {
+		t.Errorf("цикл 2 не идемпотентен: %+v", r.Total)
+	}
+	// после цикла 2 в кэше по 3 письма на сторону (добавились скопированные)
+	_, msgsA2, _ := st.LoadEndpoint("u", pair, "a")
+	_, msgsB2, _ := st.LoadEndpoint("u", pair, "b")
+	if len(msgsA2) != 3 || len(msgsB2) != 3 {
+		t.Errorf("кэш после цикла 2: A=%d B=%d, ожидали 3/3", len(msgsA2), len(msgsB2))
 	}
 }

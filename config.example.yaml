@@ -43,3 +43,12 @@ dial_timeout: 30s
 fetch_batch_size: 200
 insecure_tls: false
 hash_header: "X-Imapsync-Hash"
+
+# Инкрементальная сверка: список UID берётся через UID SEARCH, заголовки
+# фетчатся только для новых писем, разбор кэшируется в sqlite_path. Резко
+# снижает нагрузку на больших папках. Требует sqlite_path (можно тот же файл,
+# что и для source: sqlite). При включении в БД также пишется таблица
+# user_status - когда и с каким результатом отработал синк по каждому юзеру
+# (виден через `imapsync db-list`).
+state_cache: false
+# sqlite_path: /var/lib/imapsync/imapsync.db

@@ -90,6 +90,11 @@ type Config struct {
 	// HashHeader - имя кастомного заголовка, куда пишется суррогатный хеш
 	// при APPEND, чтобы находить уже скопированные письма на следующих проходах.
 	HashHeader string `yaml:"hash_header"`
+
+	// StateCache включает инкрементальную сверку: список UID берётся через
+	// UID SEARCH, заголовки фетчатся только для новых писем, разбор кэшируется в
+	// sqlite (sqlite_path). Требует заданного sqlite_path.
+	StateCache bool `yaml:"state_cache"`
 }
 
 // дефолты, применяются к нулевым значениям после парсинга.
@@ -204,6 +209,10 @@ func (c *Config) validateBase() error {
 		}
 	default:
 		return fmt.Errorf("неизвестный source %q (допустимо: %q, %q)", c.Source, SourceYAML, SourceSQLite)
+	}
+
+	if c.StateCache && strings.TrimSpace(c.SQLitePath) == "" {
+		return fmt.Errorf("state_cache: true - требуется sqlite_path")
 	}
 
 	if c.Workers < 1 {

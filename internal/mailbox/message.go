@@ -114,14 +114,20 @@ func Identity(f Fields) string {
 // имеет "mid:", а его копия на другой стороне - только записанный нами
 // "hash:<суррогат>", и именно по нему они сматчатся.
 func MatchKeys(f Fields) []string {
+	return MatchKeysFrom(f.MessageID, f.HashHdr, SurrogateHash(f))
+}
+
+// MatchKeysFrom - то же, что MatchKeys, но принимает уже вычисленный суррогатный
+// хеш напрямую (например поднятый из кэша), а не пересчитывает его из полей.
+func MatchKeysFrom(messageID, hashHdr, surrogate string) []string {
 	keys := make([]string, 0, 3)
-	if f.MessageID != "" {
-		keys = append(keys, "mid:"+f.MessageID)
+	if messageID != "" {
+		keys = append(keys, "mid:"+messageID)
 	}
-	if f.HashHdr != "" {
-		keys = append(keys, "hash:"+f.HashHdr)
+	if hashHdr != "" {
+		keys = append(keys, "hash:"+hashHdr)
 	}
-	sur := "hash:" + SurrogateHash(f)
+	sur := "hash:" + surrogate
 	if len(keys) == 0 || keys[len(keys)-1] != sur {
 		keys = append(keys, sur)
 	}

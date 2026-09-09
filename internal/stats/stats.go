@@ -48,6 +48,9 @@ func (u *UserStats) AddError(err error) {
 	u.mu.Unlock()
 }
 
+// Report - потокобезопасный снимок статистики юзера.
+func (u *UserStats) Report() UserReport { return u.snapshot() }
+
 func (u *UserStats) snapshot() UserReport {
 	u.mu.Lock()
 	started, done, lastErr := u.started, u.done, u.lastErr

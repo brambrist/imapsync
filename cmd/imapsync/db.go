@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"imapsync/config"
 	"imapsync/internal/store"
@@ -244,6 +245,11 @@ func cmdDBList(args []string) error {
 		return err
 	}
 
+	statuses, err := st.UserStatuses()
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("пары папок (%d):\n", len(folders))
 	for _, fp := range folders {
 		fmt.Printf("  %q -> %q\n", fp.A, fp.B)
@@ -251,6 +257,25 @@ func cmdDBList(args []string) error {
 	fmt.Printf("юзеры (%d, включая выключенных):\n", len(users))
 	for _, u := range users {
 		fmt.Printf("  %s: %s | %s\n", u.Name, u.UserA, u.UserB)
+		if s, ok := statuses[u.Name]; ok {
+			fmt.Printf("      статус: %s, прогон: %s", s.Status, fmtTime(s.LastRun))
+			if !s.LastOK.IsZero() {
+				fmt.Printf(", успешно: %s", fmtTime(s.LastOK))
+			}
+			fmt.Printf("\n      A->B=%d B->A=%d дубли=%d ошибок=%d",
+				s.CopiedAToB, s.CopiedBToA, s.SkippedDup, s.Errors)
+			if s.LastError != "" {
+				fmt.Printf("\n      последняя ошибка: %s", s.LastError)
+			}
+			fmt.Println()
+		}
 	}
 	return nil
+}
+
+func fmtTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Format("2006-01-02 15:04:05")
 }

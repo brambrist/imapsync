@@ -102,6 +102,16 @@ workers: 1
 	}
 }
 
+func TestStateCacheRequiresSQLitePath(t *testing.T) {
+	if _, err := Load(writeTemp(t, validCfg+"\nstate_cache: true\n")); err == nil {
+		t.Fatal("ожидали ошибку: state_cache без sqlite_path")
+	}
+	ok := validCfg + "\nstate_cache: true\nsqlite_path: /tmp/x.db\n"
+	if _, err := Load(writeTemp(t, ok)); err != nil {
+		t.Fatalf("не ожидали ошибку: %v", err)
+	}
+}
+
 func TestRejectsBadDuration(t *testing.T) {
 	bad := validCfg + "\nstats_interval: \"nonsense\"\n"
 	if _, err := Load(writeTemp(t, bad)); err == nil {

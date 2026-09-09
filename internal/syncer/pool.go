@@ -7,6 +7,7 @@ import (
 
 	"imapsync/config"
 	"imapsync/internal/stats"
+	"imapsync/internal/store"
 )
 
 // userSyncer - то, что пул применяет к каждому юзеру. Продакшн-реализация -
@@ -24,14 +25,15 @@ type Pool struct {
 	logf  stats.Logf
 }
 
-// NewPool собирает пул с продакшн-синкером.
-func NewPool(cfg *config.Config, coll *stats.Collector, logf stats.Logf) *Pool {
+// NewPool собирает пул с продакшн-синкером. Если st != nil, он передаётся
+// синкеру (инкрементальная сверка при cfg.StateCache и запись user_status).
+func NewPool(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st *store.Store) *Pool {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	return &Pool{
 		cfg:   cfg,
-		sync:  New(cfg, coll, logf),
+		sync:  NewWithState(cfg, coll, logf, st),
 		stats: coll,
 		logf:  logf,
 	}

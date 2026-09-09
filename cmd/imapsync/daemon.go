@@ -8,6 +8,7 @@ import (
 
 	"imapsync/config"
 	"imapsync/internal/stats"
+	"imapsync/internal/store"
 	"imapsync/internal/syncer"
 )
 
@@ -19,8 +20,22 @@ func runDaemon(cfg *config.Config) error {
 
 	logf := log.Printf
 
+	// БД нужна для инкрементальной сверки и/или записи статусов юзеров.
+	var st *store.Store
+	if cfg.StateCache || cfg.Source == config.SourceSQLite {
+		var err error
+		st, err = store.Open(cfg.SQLitePath)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		if cfg.StateCache {
+			logf("инкрементальная сверка включена, кэш: %s", cfg.SQLitePath)
+		}
+	}
+
 	coll := stats.New()
-	pool := syncer.NewPool(cfg, coll, logf)
+	pool := syncer.NewPool(cfg, coll, logf, st)
 
 	logf("запуск: A=%s B=%s, юзеров=%d, воркеров=%d, интервал цикла=%s",
 		cfg.ServerA.Addr(), cfg.ServerB.Addr(), len(cfg.Users), cfg.Workers, cfg.SyncInterval.Std())

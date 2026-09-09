@@ -51,6 +51,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("создание схемы sqlite %s: %w", path, err)
 	}
+	if _, err := db.Exec(stateSchema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("создание схемы кэша состояния sqlite %s: %w", path, err)
+	}
 	return &Store{db: db}, nil
 }
 

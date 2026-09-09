@@ -140,7 +140,7 @@ func TestPoolRunConvergesRealServers(t *testing.T) {
 	}
 
 	coll := stats.New()
-	pool := NewPool(cfg, coll, func(string, ...any) {})
+	pool := NewPool(cfg, coll, func(string, ...any) {}, nil)
 
 	// один полный цикл без отмены - все юзеры должны отработать целиком
 	pool.RunCycle(context.Background())

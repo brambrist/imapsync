@@ -110,20 +110,40 @@ type FetchedMessage struct {
 	Header       []byte // сырой блок заголовков (RFC 822)
 }
 
+var headerFetchItems = []imap.FetchItem{
+	imap.FetchUid,
+	imap.FetchFlags,
+	imap.FetchInternalDate,
+	imap.FetchRFC822Size,
+	headerSection.FetchItem(),
+}
+
+// decodeHeaderMsg превращает *imap.Message в FetchedMessage, читая блок заголовков.
+func (cl *Client) decodeHeaderMsg(msg *imap.Message) (FetchedMessage, error) {
+	fm := FetchedMessage{
+		SeqNum:       msg.SeqNum,
+		Uid:          msg.Uid,
+		Flags:        msg.Flags,
+		InternalDate: msg.InternalDate,
+		Size:         msg.Size,
+	}
+	if body := msg.GetBody(headerSection); body != nil {
+		raw, err := io.ReadAll(body)
+		if err != nil {
+			return fm, fmt.Errorf("чтение заголовков uid=%d на %s (юзер %s): %w", msg.Uid, cl.server, cl.user, err)
+		}
+		fm.Header = raw
+	}
+	return fm, nil
+}
+
 // FetchHeaders забирает заголовки, флаги, INTERNALDATE, UID и размер всех писем
-// папки батчами по batchSize. Папка должна быть уже выбрана через Select.
+// папки батчами по batchSize (по порядковым номерам). Папка должна быть уже
+// выбрана через Select.
 func (cl *Client) FetchHeaders(total uint32, batchSize int) ([]FetchedMessage, error) {
 	if total == 0 {
 		return nil, nil
 	}
-	items := []imap.FetchItem{
-		imap.FetchUid,
-		imap.FetchFlags,
-		imap.FetchInternalDate,
-		imap.FetchRFC822Size,
-		headerSection.FetchItem(),
-	}
-
 	out := make([]FetchedMessage, 0, total)
 	for from := uint32(1); from <= total; from += uint32(batchSize) {
 		to := min(from+uint32(batchSize)-1, total)
@@ -132,27 +152,65 @@ func (cl *Client) FetchHeaders(total uint32, batchSize int) ([]FetchedMessage, e
 
 		ch := make(chan *imap.Message, batchSize)
 		done := make(chan error, 1)
-		go func() { done <- cl.c.Fetch(seqset, items, ch) }()
+		go func() { done <- cl.c.Fetch(seqset, headerFetchItems, ch) }()
 
 		for msg := range ch {
-			fm := FetchedMessage{
-				SeqNum:       msg.SeqNum,
-				Uid:          msg.Uid,
-				Flags:        msg.Flags,
-				InternalDate: msg.InternalDate,
-				Size:         msg.Size,
-			}
-			if body := msg.GetBody(headerSection); body != nil {
-				raw, err := io.ReadAll(body)
-				if err != nil {
-					return nil, fmt.Errorf("чтение заголовков seq=%d на %s (юзер %s): %w", msg.SeqNum, cl.server, cl.user, err)
-				}
-				fm.Header = raw
+			fm, err := cl.decodeHeaderMsg(msg)
+			if err != nil {
+				return nil, err
 			}
 			out = append(out, fm)
 		}
 		if err := <-done; err != nil {
 			return nil, fmt.Errorf("FETCH заголовков %d:%d на %s (юзер %s): %w", from, to, cl.server, cl.user, err)
+		}
+	}
+	return out, nil
+}
+
+// UIDSearchAll возвращает UID всех писем выбранной папки (SEARCH UID 1:*).
+// Дёшево даже для крупных папок: один round-trip, ответ - список чисел.
+func (cl *Client) UIDSearchAll() ([]uint32, error) {
+	crit := imap.NewSearchCriteria()
+	crit.Uid = new(imap.SeqSet)
+	crit.Uid.AddRange(1, 0) // 1:*
+	uids, err := cl.c.UidSearch(crit)
+	if err != nil {
+		return nil, fmt.Errorf("UID SEARCH на %s (юзер %s): %w", cl.server, cl.user, err)
+	}
+	return uids, nil
+}
+
+// FetchHeadersByUID забирает заголовки, флаги, INTERNALDATE и размер писем с
+// указанными UID батчами по batchSize. Папка должна быть выбрана через Select.
+func (cl *Client) FetchHeadersByUID(uids []uint32, batchSize int) ([]FetchedMessage, error) {
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	if batchSize < 1 {
+		batchSize = len(uids)
+	}
+	out := make([]FetchedMessage, 0, len(uids))
+	for start := 0; start < len(uids); start += batchSize {
+		end := min(start+batchSize, len(uids))
+		seqset := new(imap.SeqSet)
+		for _, u := range uids[start:end] {
+			seqset.AddNum(u)
+		}
+
+		ch := make(chan *imap.Message, end-start)
+		done := make(chan error, 1)
+		go func() { done <- cl.c.UidFetch(seqset, headerFetchItems, ch) }()
+
+		for msg := range ch {
+			fm, err := cl.decodeHeaderMsg(msg)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, fm)
+		}
+		if err := <-done; err != nil {
+			return nil, fmt.Errorf("FETCH заголовков по UID (%d шт.) на %s (юзер %s): %w", end-start, cl.server, cl.user, err)
 		}
 	}
 	return out, nil

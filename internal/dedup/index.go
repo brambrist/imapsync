@@ -16,8 +16,21 @@ type Entry struct {
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
+	Fields       mailbox.Fields // может быть нулевым, если письмо поднято из кэша
+	Surrogate    string         // суррогатный хеш (для записи в X-Imapsync-Hash при копировании)
+	Keys         []string       // все ключи сопоставления (см. mailbox.MatchKeys)
+}
+
+// Input - разобранное письмо для BuildFrom: подходит как для свежего FETCH, так
+// и для строки кэша состояния.
+type Input struct {
+	Uid          uint32
+	Flags        []string
+	InternalDate time.Time
+	Size         uint32
 	Fields       mailbox.Fields
-	Keys         []string // все ключи сопоставления (см. mailbox.MatchKeys)
+	Surrogate    string
+	Keys         []string
 }
 
 // Index - индекс писем одной папки.
@@ -43,38 +56,56 @@ func (idx *Index) has(keys []string) bool {
 	return false
 }
 
-// Build создаёт индекс из писем, полученных mailbox.Client.FetchHeaders.
+// Build создаёт индекс из писем, полученных mailbox.Client.FetchHeaders:
+// разбирает заголовки и делегирует в BuildFrom.
 // hashHeader - имя заголовка с суррогатным хешем (из конфига).
 func Build(msgs []mailbox.FetchedMessage, hashHeader string) (*Index, []error) {
-	idx := &Index{byKey: make(map[string]*Entry, len(msgs)), entries: make([]*Entry, 0, len(msgs))}
+	inputs := make([]Input, 0, len(msgs))
 	var errs []error
-
 	for _, m := range msgs {
 		f, err := mailbox.ParseFields(m.Header, hashHeader)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("письмо uid=%d: %w", m.Uid, err))
 			continue
 		}
-		keys := mailbox.MatchKeys(f)
-
-		if idx.has(keys) {
-			idx.dups++
-			continue
-		}
-		e := &Entry{
+		sur := mailbox.SurrogateHash(f)
+		inputs = append(inputs, Input{
 			Uid:          m.Uid,
 			Flags:        m.Flags,
 			InternalDate: m.InternalDate,
 			Size:         m.Size,
 			Fields:       f,
-			Keys:         keys,
+			Surrogate:    sur,
+			Keys:         mailbox.MatchKeysFrom(f.MessageID, f.HashHdr, sur),
+		})
+	}
+	return BuildFrom(inputs), errs
+}
+
+// BuildFrom строит индекс из уже разобранных писем. Ключи в Input.Keys должны
+// быть заполнены (см. mailbox.MatchKeys / MatchKeysFrom).
+func BuildFrom(inputs []Input) *Index {
+	idx := &Index{byKey: make(map[string]*Entry, len(inputs)), entries: make([]*Entry, 0, len(inputs))}
+	for _, in := range inputs {
+		if idx.has(in.Keys) {
+			idx.dups++
+			continue
+		}
+		e := &Entry{
+			Uid:          in.Uid,
+			Flags:        in.Flags,
+			InternalDate: in.InternalDate,
+			Size:         in.Size,
+			Fields:       in.Fields,
+			Surrogate:    in.Surrogate,
+			Keys:         in.Keys,
 		}
 		idx.entries = append(idx.entries, e)
-		for _, k := range keys {
+		for _, k := range e.Keys {
 			idx.byKey[k] = e
 		}
 	}
-	return idx, errs
+	return idx
 }
 
 // Missing возвращает письма из src, которых нет в dst (по любому из ключей).
