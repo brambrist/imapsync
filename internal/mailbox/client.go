@@ -286,8 +286,10 @@ func (cl *Client) FetchHeadersByUID(uids []uint32, batchSize int) ([]FetchedMess
 	return out, nil
 }
 
-// FetchFull возвращает письмо целиком (заголовки + тело) по его UID.
-func (cl *Client) FetchFull(uid uint32) ([]byte, error) {
+// FetchFullLiteral возвращает письмо целиком (заголовки + тело) по UID как
+// imap.Literal. go-imap v1 всё равно буферизует литерал в памяти, но так мы не
+// делаем поверх этого ещё одну копию (io.ReadAll).
+func (cl *Client) FetchFullLiteral(uid uint32) (imap.Literal, error) {
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uid)
 
@@ -296,39 +298,55 @@ func (cl *Client) FetchFull(uid uint32) ([]byte, error) {
 	done := make(chan error, 1)
 	go func() { done <- cl.c.UidFetch(seqset, items, ch) }()
 
-	var raw []byte
+	var lit imap.Literal
 	for msg := range ch {
-		body := msg.GetBody(fullSection)
-		if body == nil {
-			continue
+		if body := msg.GetBody(fullSection); body != nil {
+			lit = body
 		}
-		b, err := io.ReadAll(body)
-		if err != nil {
-			return nil, fmt.Errorf("чтение тела uid=%d на %s (юзер %s): %w", uid, cl.server, cl.user, err)
-		}
-		raw = b
 	}
 	if err := <-done; err != nil {
 		return nil, fmt.Errorf("FETCH тела uid=%d на %s (юзер %s): %w", uid, cl.server, cl.user, err)
 	}
-	if raw == nil {
+	if lit == nil {
 		return nil, fmt.Errorf("письмо uid=%d не найдено на %s (юзер %s)", uid, cl.server, cl.user)
 	}
-	return raw, nil
+	return lit, nil
+}
+
+// prefixedLiteral - imap.Literal из "префикс + тело" без копирования тела.
+type prefixedLiteral struct {
+	r      io.Reader
+	length int
+}
+
+func (p *prefixedLiteral) Read(b []byte) (int, error) { return p.r.Read(b) }
+func (p *prefixedLiteral) Len() int                   { return p.length }
+
+// WithHashHeader возвращает литерал письма с добавленным в начало заголовком
+// hashHeader: value (без копирования тела). Если заголовок уже есть - литерал
+// возвращается как есть.
+func WithHashHeader(body imap.Literal, hashHeader, value string) imap.Literal {
+	if buf, ok := body.(*bytes.Buffer); ok && HasHeader(buf.Bytes(), hashHeader) {
+		return body
+	}
+	hdr := fmt.Appendf(nil, "%s: %s\r\n", hashHeader, value)
+	return &prefixedLiteral{
+		r:      io.MultiReader(bytes.NewReader(hdr), body),
+		length: len(hdr) + body.Len(),
+	}
 }
 
 // Append дописывает письмо в папку, сохраняя флаги и внутреннюю дату оригинала.
 func (cl *Client) Append(folder string, flags []string, date time.Time, body []byte) error {
-	_, err := cl.AppendGetUID(folder, flags, date, body)
+	_, err := cl.AppendLiteral(folder, flags, date, bytes.NewBuffer(body))
 	return err
 }
 
-// AppendGetUID дописывает письмо и пытается вернуть присвоенный ему UID из
-// ответа [APPENDUID] (расширение UIDPLUS, RFC 4315). Если сервер его не
-// поддерживает - uid == 0 и ошибки нет.
-func (cl *Client) AppendGetUID(folder string, flags []string, date time.Time, body []byte) (uint32, error) {
-	// *bytes.Buffer реализует imap.Literal (io.Reader + Len() int).
-	cmd := &commands.Append{Mailbox: folder, Flags: flags, Date: date, Message: bytes.NewBuffer(body)}
+// AppendLiteral дописывает письмо (переданное как imap.Literal) и пытается
+// вернуть присвоенный ему UID из ответа [APPENDUID] (UIDPLUS, RFC 4315). Если
+// сервер его не поддерживает - uid == 0 и ошибки нет.
+func (cl *Client) AppendLiteral(folder string, flags []string, date time.Time, msg imap.Literal) (uint32, error) {
+	cmd := &commands.Append{Mailbox: folder, Flags: flags, Date: date, Message: msg}
 	status, err := cl.c.Execute(cmd, nil)
 	if err != nil {
 		return 0, fmt.Errorf("APPEND в %q на %s (юзер %s): %w", folder, cl.server, cl.user, err)

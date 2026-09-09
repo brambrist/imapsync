@@ -273,7 +273,7 @@ cmd/imapsync/        точка входа: диспетчер подкоман�
 config/              YAML-конфиг: загрузка, валидация, дефолты
 internal/
   mailbox/           обёртка над go-imap: connect+TLS (ctx-aware), master-login,
-                     resolve-folder, fetch/append/UID SEARCH, APPENDUID; хеши
+                     resolve-folder, fetch/UID SEARCH, append литералом; хеши
   dedup/             мультиключевой индекс папки, вычисление дельты
   stats/             потокобезопасные счётчики, периодический вывод
   syncer/            синк одного юзера (полная и инкрементальная сверка) + пул

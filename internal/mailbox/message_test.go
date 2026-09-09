@@ -1,6 +1,8 @@
 package mailbox
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -74,5 +76,29 @@ func TestInjectHashHeader(t *testing.T) {
 	again := InjectHashHeader(out, "X-Imapsync-Hash", "other")
 	if string(again) != string(out) {
 		t.Error("повторная вставка изменила письмо")
+	}
+}
+
+func TestWithHashHeaderLiteral(t *testing.T) {
+	body := []byte("Subject: hi\r\nFrom: a@b\r\n\r\nтело")
+	lit := WithHashHeader(bytes.NewBuffer(append([]byte{}, body...)), "X-Imapsync-Hash", "cafe")
+
+	if lit.Len() != len("X-Imapsync-Hash: cafe\r\n")+len(body) {
+		t.Errorf("Len = %d, ожидали %d", lit.Len(), len("X-Imapsync-Hash: cafe\r\n")+len(body))
+	}
+	got, _ := io.ReadAll(lit)
+	if len(got) != lit.Len() {
+		t.Errorf("прочитано %d байт, Len обещал %d", len(got), lit.Len())
+	}
+	if !strings.HasPrefix(string(got), "X-Imapsync-Hash: cafe\r\nSubject: hi") {
+		t.Errorf("не тот префикс: %q", got[:40])
+	}
+
+	// уже есть заголовок - литерал без изменений (префикс не добавляется)
+	orig := "X-Imapsync-Hash: old\r\nSubject: hi\r\n\r\nx"
+	same := WithHashHeader(bytes.NewBufferString(orig), "X-Imapsync-Hash", "new")
+	out2, _ := io.ReadAll(same)
+	if string(out2) != orig {
+		t.Errorf("литерал с существующим заголовком изменён: %q", out2)
 	}
 }

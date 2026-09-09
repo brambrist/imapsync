@@ -134,20 +134,28 @@ func MatchKeysFrom(messageID, hashHdr, surrogate string) []string {
 	return keys
 }
 
-// InjectHashHeader вставляет заголовок hashHeader: value в начало сырого письма,
-// чтобы при следующих проходах находить уже скопированное письмо по нему.
-// Если такой заголовок уже есть - письмо возвращается без изменений.
-func InjectHashHeader(raw []byte, hashHeader, value string) []byte {
-	prefixLC := strings.ToLower(hashHeader) + ":"
-	// проверяем только блок заголовков (до первой пустой строки)
+// HasHeader сообщает, есть ли в блоке заголовков сырого письма заголовок с
+// именем name (регистронезависимо).
+func HasHeader(raw []byte, name string) bool {
+	prefixLC := strings.ToLower(name) + ":"
 	headerEnd := bytes.Index(raw, []byte("\r\n\r\n"))
 	if headerEnd < 0 {
 		headerEnd = len(raw)
 	}
 	for line := range bytes.SplitSeq(raw[:headerEnd], []byte("\r\n")) {
 		if strings.HasPrefix(strings.ToLower(string(line)), prefixLC) {
-			return raw
+			return true
 		}
+	}
+	return false
+}
+
+// InjectHashHeader вставляет заголовок hashHeader: value в начало сырого письма,
+// чтобы при следующих проходах находить уже скопированное письмо по нему.
+// Если такой заголовок уже есть - письмо возвращается без изменений.
+func InjectHashHeader(raw []byte, hashHeader, value string) []byte {
+	if HasHeader(raw, hashHeader) {
+		return raw
 	}
 	hdr := fmt.Appendf(nil, "%s: %s\r\n", hashHeader, value)
 	return append(hdr, raw...)

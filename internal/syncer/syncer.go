@@ -424,17 +424,18 @@ func (s *Syncer) copyMissing(sess *session, src, dst *mailbox.Client, dstFolder 
 
 // copyOne забирает письмо целиком, проставляет суррогатный хеш в кастомный
 // заголовок и дописывает в целевую папку с сохранением флагов и внутренней даты.
+// Тело письма не копируется лишний раз: заголовок добавляется потоково.
 // Возвращает присвоенный UID (0, если сервер не поддерживает APPENDUID).
 func (s *Syncer) copyOne(src, dst *mailbox.Client, dstFolder string, e *dedup.Entry) (uint32, error) {
-	raw, err := src.FetchFull(e.Uid)
+	body, err := src.FetchFullLiteral(e.Uid)
 	if err != nil {
 		return 0, err
 	}
 	// Суррогатный хеш пишем всегда - чтобы на следующих проходах письмо
 	// находилось по заголовку даже если Message-ID появится/исчезнет.
-	raw = mailbox.InjectHashHeader(raw, s.cfg.HashHeader, e.Surrogate)
+	msg := mailbox.WithHashHeader(body, s.cfg.HashHeader, e.Surrogate)
 
-	return dst.AppendGetUID(dstFolder, filterFlags(e.Flags), e.InternalDate, raw)
+	return dst.AppendLiteral(dstFolder, filterFlags(e.Flags), e.InternalDate, msg)
 }
 
 // filterFlags оставляет только переносимые флаги.
