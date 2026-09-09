@@ -1,0 +1,18 @@
+# собранный бинарь
+/imapsync
+
+# реальные конфиги с секретами
+/config.yaml
+*.local.yaml
+
+# локальные БД sqlite
+*.db
+*.db-wal
+*.db-shm
+
+# импортные csv
+*.csv
+
+# редакторы / ОС
+*~
+.DS_Store

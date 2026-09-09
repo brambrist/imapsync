@@ -1,0 +1,45 @@
+# Пример конфига IMAP Sync.
+# Имперсонация: SASL PLAIN с authzid (authcid = master_user, authzid = user_a/user_b).
+
+server_a:
+  host: mail-a.corp.ru
+  port: 993
+  master_user: svc_sync
+  master_pass: "SECRET_A"
+
+server_b:
+  host: mail-b.corp.ru
+  port: 993
+  master_user: svc_sync
+  master_pass: "SECRET_B"
+
+# Источник списков folders/users: "yaml" (по умолчанию) или "sqlite".
+# При "sqlite" секции folders/users ниже необязательны и игнорируются,
+# данные читаются из файла sqlite_path. Наполнять БД - командами imapsync db-*.
+source: yaml
+# sqlite_path: /var/lib/imapsync/imapsync.db
+
+# Явные пары папок: имя на A -> имя на B.
+folders:
+  - a: "Sent"
+    b: "Отправленные"
+
+users:
+  - name: ivanov
+    user_a: ivanov@corp.ru
+    user_b: ivanov@corp.ru
+  - name: petrov
+    user_a: petrov@corp.ru
+    user_b: petrov@corp.ru
+  - name: sidorov
+    user_a: sidorov@corp.ru
+    user_b: sidorov@corp.ru
+
+workers: 2                 # МЕНЬШЕ числа юзеров
+sync_interval: 5m          # пауза между полными циклами
+stats_interval: 1m         # периодичность сводной статистики
+per_user_timeout: 10m
+dial_timeout: 30s
+fetch_batch_size: 200
+insecure_tls: false
+hash_header: "X-Imapsync-Hash"
