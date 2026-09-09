@@ -153,9 +153,17 @@ sync_interval: 5m          # пауза между полными циклами
 stats_interval: 1m         # периодичность сводной статистики
 per_user_timeout: 10m
 dial_timeout: 30s
+io_timeout: 5m             # таймаут на одну IMAP-операцию
+connect_retries: 3         # повторы подключения (0 = дефолт 3)
+retry_backoff: 5s
+full_resync_every: 24h     # при state_cache: полный пере-скан папки раз в N
 fetch_batch_size: 200
 insecure_tls: false
 ```
+
+Имена в `folders` резолвятся через `mailbox.ResolveFolder`: точное имя →
+SPECIAL-USE токен (`\Sent`) → регистронезависимо. Демон при открытой БД берёт
+`flock` на `<sqlite_path>.lock`.
 
 ## Открытые вопросы (решить при реализации)
 
@@ -171,7 +179,8 @@ insecure_tls: false
    появление Message-ID не приводит к задвоению.
 4. **[РЕШЕНО] APPEND и внутренняя дата/флаги.** Сохраняем оригинальный
    INTERNALDATE; из флагов переносим только `\Seen \Answered \Flagged \Draft`
-   (`\Recent` нельзя, `\Deleted` не синхронизируем).
+   (`\Recent` нельзя, `\Deleted` не синхронизируем). APPEND через
+   `AppendGetUID` - читаем APPENDUID (UIDPLUS), если сервер отдаёт.
 5. **[РЕШЕНО] Идемпотентность и рестарты.** По умолчанию индекс строится каждый
    цикл заново из папок — БД состояния НЕ нужна, источник истины папки +
    X-Imapsync-Hash. Опционально `state_cache: true` включает инкрементальную

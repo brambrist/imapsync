@@ -7,7 +7,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 
 	_ "modernc.org/sqlite" // драйвер "sqlite" (чистый Go, без CGO)
 
@@ -30,7 +32,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 // Store - открытая БД.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	lock *os.File // != nil при OpenExclusive; держит flock до Close
 }
 
 // Open открывает (создавая при необходимости) БД по пути path и применяет схему.
@@ -58,8 +61,16 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Close закрывает БД.
-func (s *Store) Close() error { return s.db.Close() }
+// Close закрывает БД и снимает advisory-блокировку, если она бралась.
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.lock != nil {
+		_ = syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN)
+		_ = s.lock.Close()
+		s.lock = nil
+	}
+	return err
+}
 
 // UpsertUser добавляет или обновляет пользователя по имени.
 func (s *Store) UpsertUser(u config.User, enabled bool) error {

@@ -59,6 +59,18 @@ func TestLoadValidWithDefaults(t *testing.T) {
 	if cfg.HashHeader != "X-Imapsync-Hash" {
 		t.Errorf("hash_header дефолт: got %q", cfg.HashHeader)
 	}
+	if cfg.IOTimeout.Std() != 5*time.Minute {
+		t.Errorf("io_timeout дефолт: got %v", cfg.IOTimeout.Std())
+	}
+	if cfg.ConnectRetries != 3 {
+		t.Errorf("connect_retries дефолт: got %d", cfg.ConnectRetries)
+	}
+	if cfg.RetryBackoff.Std() != 5*time.Second {
+		t.Errorf("retry_backoff дефолт: got %v", cfg.RetryBackoff.Std())
+	}
+	if cfg.FullResyncEvery.Std() != 24*time.Hour {
+		t.Errorf("full_resync_every дефолт: got %v", cfg.FullResyncEvery.Std())
+	}
 }
 
 func TestWorkersMustBeLessThanUsers(t *testing.T) {

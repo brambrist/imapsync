@@ -38,17 +38,29 @@ users:
 workers: 2                 # МЕНЬШЕ числа юзеров
 sync_interval: 5m          # пауза между полными циклами
 stats_interval: 1m         # периодичность сводной статистики
-per_user_timeout: 10m
-dial_timeout: 30s
+per_user_timeout: 10m      # общий бюджет времени на одного юзера
+dial_timeout: 30s          # таймаут установки TCP-соединения
+io_timeout: 5m             # таймаут на одну IMAP-операцию (FETCH/APPEND/...)
 fetch_batch_size: 200
 insecure_tls: false
 hash_header: "X-Imapsync-Hash"
+
+# Повторы подключения при обрыве/транзиентной ошибке.
+# connect_retries: 0 означает "дефолт" (3); для полного отключения не годится.
+connect_retries: 3
+retry_backoff: 5s          # базовая пауза, растёт экспоненциально
+
+# Имена папок из folders сопоставляются с реальными: точное имя -> SPECIAL-USE
+# токен ("\\Sent", "\\Drafts", ...) -> регистронезависимо. Можно писать:
+#   folders: [{a: "\\Sent", b: "\\Sent"}]
 
 # Инкрементальная сверка: список UID берётся через UID SEARCH, заголовки
 # фетчатся только для новых писем, разбор кэшируется в sqlite_path. Резко
 # снижает нагрузку на больших папках. Требует sqlite_path (можно тот же файл,
 # что и для source: sqlite). При включении в БД также пишется таблица
 # user_status - когда и с каким результатом отработал синк по каждому юзеру
-# (виден через `imapsync db-list`).
+# (виден через `imapsync db-list`). Демон берёт эксклюзивную блокировку на
+# <sqlite_path>.lock - второй экземпляр на ту же БД не запустится.
 state_cache: false
 # sqlite_path: /var/lib/imapsync/imapsync.db
+full_resync_every: 24h     # как часто делать полный пере-скан папки (отлов дрейфа кэша)

@@ -21,16 +21,18 @@ func runDaemon(cfg *config.Config) error {
 	logf := log.Printf
 
 	// БД нужна для инкрементальной сверки и/или записи статусов юзеров.
+	// Эксклюзивная блокировка: два демона на одну БД побьют состояние.
 	var st *store.Store
 	if cfg.StateCache || cfg.Source == config.SourceSQLite {
 		var err error
-		st, err = store.Open(cfg.SQLitePath)
+		st, err = store.OpenExclusive(cfg.SQLitePath)
 		if err != nil {
 			return err
 		}
 		defer st.Close()
 		if cfg.StateCache {
-			logf("инкрементальная сверка включена, кэш: %s", cfg.SQLitePath)
+			logf("инкрементальная сверка включена, кэш: %s (full_resync каждые %s)",
+				cfg.SQLitePath, cfg.FullResyncEvery.Std())
 		}
 	}
 

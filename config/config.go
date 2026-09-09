@@ -83,9 +83,20 @@ type Config struct {
 	SyncInterval   Duration `yaml:"sync_interval"`    // пауза между полными циклами
 	StatsInterval  Duration `yaml:"stats_interval"`   // периодичность сводной статистики
 	PerUserTimeout Duration `yaml:"per_user_timeout"` // таймаут обработки одного юзера
-	DialTimeout    Duration `yaml:"dial_timeout"`     // таймаут установки соединения
+	DialTimeout    Duration `yaml:"dial_timeout"`     // таймаут установки TCP-соединения
+	IOTimeout      Duration `yaml:"io_timeout"`       // таймаут на одну IMAP-операцию (FETCH/APPEND/...)
 	FetchBatchSize int      `yaml:"fetch_batch_size"` // размер батча при FETCH
 	InsecureTLS    bool     `yaml:"insecure_tls"`     // не проверять сертификат (для тестов)
+
+	// ConnectRetries - сколько раз повторять подключение/переподключение к серверу
+	// при транзиентной ошибке (0 - без повторов). RetryBackoff - базовая пауза
+	// между попытками (экспоненциальный рост).
+	ConnectRetries int      `yaml:"connect_retries"`
+	RetryBackoff   Duration `yaml:"retry_backoff"`
+
+	// FullResyncEvery - как часто в режиме state_cache делать полный пере-скан
+	// папки (сброс кэша эндпоинта) для отлова расхождений. 0 - никогда.
+	FullResyncEvery Duration `yaml:"full_resync_every"`
 
 	// HashHeader - имя кастомного заголовка, куда пишется суррогатный хеш
 	// при APPEND, чтобы находить уже скопированные письма на следующих проходах.
@@ -99,14 +110,18 @@ type Config struct {
 
 // дефолты, применяются к нулевым значениям после парсинга.
 const (
-	defaultPort           = 993
-	defaultWorkers        = 4
-	defaultSyncInterval   = Duration(5 * time.Minute)
-	defaultStatsInterval  = Duration(1 * time.Minute)
-	defaultPerUserTimeout = Duration(10 * time.Minute)
-	defaultDialTimeout    = Duration(30 * time.Second)
-	defaultFetchBatchSize = 200
-	defaultHashHeader     = "X-Imapsync-Hash"
+	defaultPort            = 993
+	defaultWorkers         = 4
+	defaultSyncInterval    = Duration(5 * time.Minute)
+	defaultStatsInterval   = Duration(1 * time.Minute)
+	defaultPerUserTimeout  = Duration(10 * time.Minute)
+	defaultDialTimeout     = Duration(30 * time.Second)
+	defaultIOTimeout       = Duration(5 * time.Minute)
+	defaultFetchBatchSize  = 200
+	defaultHashHeader      = "X-Imapsync-Hash"
+	defaultConnectRetries  = 3
+	defaultRetryBackoff    = Duration(5 * time.Second)
+	defaultFullResyncEvery = Duration(24 * time.Hour)
 )
 
 // Load читает конфиг из файла, применяет дефолты и валидирует.
@@ -180,6 +195,9 @@ func (c *Config) applyDefaults() {
 	if c.DialTimeout == 0 {
 		c.DialTimeout = defaultDialTimeout
 	}
+	if c.IOTimeout == 0 {
+		c.IOTimeout = defaultIOTimeout
+	}
 	if c.FetchBatchSize == 0 {
 		c.FetchBatchSize = defaultFetchBatchSize
 	}
@@ -188,6 +206,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Source == "" {
 		c.Source = SourceYAML
+	}
+	if c.ConnectRetries == 0 {
+		c.ConnectRetries = defaultConnectRetries
+	}
+	if c.RetryBackoff == 0 {
+		c.RetryBackoff = defaultRetryBackoff
+	}
+	if c.FullResyncEvery == 0 {
+		c.FullResyncEvery = defaultFullResyncEvery
 	}
 }
 

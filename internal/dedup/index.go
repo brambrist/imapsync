@@ -17,6 +17,7 @@ type Entry struct {
 	InternalDate time.Time
 	Size         uint32
 	Fields       mailbox.Fields // может быть нулевым, если письмо поднято из кэша
+	MsgID        string         // нормализованный Message-ID ("" если отсутствует)
 	Surrogate    string         // суррогатный хеш (для записи в X-Imapsync-Hash при копировании)
 	Keys         []string       // все ключи сопоставления (см. mailbox.MatchKeys)
 }
@@ -29,6 +30,7 @@ type Input struct {
 	InternalDate time.Time
 	Size         uint32
 	Fields       mailbox.Fields
+	MsgID        string
 	Surrogate    string
 	Keys         []string
 }
@@ -75,6 +77,7 @@ func Build(msgs []mailbox.FetchedMessage, hashHeader string) (*Index, []error) {
 			InternalDate: m.InternalDate,
 			Size:         m.Size,
 			Fields:       f,
+			MsgID:        f.MessageID,
 			Surrogate:    sur,
 			Keys:         mailbox.MatchKeysFrom(f.MessageID, f.HashHdr, sur),
 		})
@@ -97,6 +100,7 @@ func BuildFrom(inputs []Input) *Index {
 			InternalDate: in.InternalDate,
 			Size:         in.Size,
 			Fields:       in.Fields,
+			MsgID:        in.MsgID,
 			Surrogate:    in.Surrogate,
 			Keys:         in.Keys,
 		}

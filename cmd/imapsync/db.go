@@ -13,133 +13,106 @@ import (
 	"imapsync/internal/store"
 )
 
-// openStore - общий разбор флага -db и открытие БД.
-func openStore(fs *flag.FlagSet, args []string) (*store.Store, error) {
+// withStore - общий каркас подкоманд db-*: регистрирует флаг -db (и через setup
+// любые дополнительные), парсит аргументы, открывает БД и вызывает fn.
+func withStore(name string, args []string, setup func(*flag.FlagSet), fn func(*store.Store, *flag.FlagSet) error) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	dbPath := fs.String("db", "", "путь к файлу sqlite")
+	if setup != nil {
+		setup(fs)
+	}
 	if err := fs.Parse(args); err != nil {
-		return nil, err
+		return err
 	}
 	if *dbPath == "" {
-		return nil, fmt.Errorf("не задан -db")
+		return fmt.Errorf("не задан -db")
 	}
-	return store.Open(*dbPath)
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	return fn(st, fs)
 }
 
 func cmdDBAddUser(args []string) error {
-	fs := flag.NewFlagSet("db-add-user", flag.ContinueOnError)
-	dbPath := fs.String("db", "", "путь к файлу sqlite")
-	name := fs.String("name", "", "логическое имя юзера")
-	a := fs.String("a", "", "адрес на сервере A (authzid)")
-	b := fs.String("b", "", "адрес на сервере B (authzid)")
-	disabled := fs.Bool("disabled", false, "добавить выключенным")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *dbPath == "" {
-		return fmt.Errorf("не задан -db")
-	}
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	if err := st.UpsertUser(config.User{Name: *name, UserA: *a, UserB: *b}, !*disabled); err != nil {
-		return err
-	}
-	fmt.Printf("юзер %q сохранён (enabled=%v)\n", *name, !*disabled)
-	return nil
+	var name, a, b *string
+	var disabled *bool
+	return withStore("db-add-user", args, func(fs *flag.FlagSet) {
+		name = fs.String("name", "", "логическое имя юзера")
+		a = fs.String("a", "", "адрес на сервере A (authzid)")
+		b = fs.String("b", "", "адрес на сервере B (authzid)")
+		disabled = fs.Bool("disabled", false, "добавить выключенным")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.UpsertUser(config.User{Name: *name, UserA: *a, UserB: *b}, !*disabled); err != nil {
+			return err
+		}
+		fmt.Printf("юзер %q сохранён (enabled=%v)\n", *name, !*disabled)
+		return nil
+	})
 }
 
 func cmdDBAddFolder(args []string) error {
-	fs := flag.NewFlagSet("db-add-folder", flag.ContinueOnError)
-	dbPath := fs.String("db", "", "путь к файлу sqlite")
-	a := fs.String("a", "", "имя папки на сервере A")
-	b := fs.String("b", "", "имя папки на сервере B")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *dbPath == "" {
-		return fmt.Errorf("не задан -db")
-	}
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	if err := st.UpsertFolderPair(config.FolderPair{A: *a, B: *b}); err != nil {
-		return err
-	}
-	fmt.Printf("пара папок %q/%q сохранена\n", *a, *b)
-	return nil
+	var a, b *string
+	return withStore("db-add-folder", args, func(fs *flag.FlagSet) {
+		a = fs.String("a", "", "имя папки на сервере A")
+		b = fs.String("b", "", "имя папки на сервере B")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if err := st.UpsertFolderPair(config.FolderPair{A: *a, B: *b}); err != nil {
+			return err
+		}
+		fmt.Printf("пара папок %q/%q сохранена\n", *a, *b)
+		return nil
+	})
 }
 
 func cmdDBImportYAML(args []string) error {
-	fs := flag.NewFlagSet("db-import-yaml", flag.ContinueOnError)
-	dbPath := fs.String("db", "", "путь к файлу sqlite")
-	cfgPath := fs.String("config", "", "путь к YAML-конфигу")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *dbPath == "" || *cfgPath == "" {
-		return fmt.Errorf("нужны -db и -config")
-	}
-
-	// Читаем YAML напрямую, чтобы не спотыкаться о валидацию source: sqlite.
-	cfg, err := config.LoadEntitiesOnly(*cfgPath)
-	if err != nil {
-		return err
-	}
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	nf, nu, err := st.ImportConfig(cfg)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("импортировано из %s: пар папок=%d, юзеров=%d\n", *cfgPath, nf, nu)
-	return nil
+	var cfgPath *string
+	return withStore("db-import-yaml", args, func(fs *flag.FlagSet) {
+		cfgPath = fs.String("config", "", "путь к YAML-конфигу")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if *cfgPath == "" {
+			return fmt.Errorf("не задан -config")
+		}
+		// Читаем YAML напрямую, чтобы не спотыкаться о валидацию source: sqlite.
+		cfg, err := config.LoadEntitiesOnly(*cfgPath)
+		if err != nil {
+			return err
+		}
+		nf, nu, err := st.ImportConfig(cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("импортировано из %s: пар папок=%d, юзеров=%d\n", *cfgPath, nf, nu)
+		return nil
+	})
 }
 
 func cmdDBImportCSV(args []string) error {
-	fs := flag.NewFlagSet("db-import-csv", flag.ContinueOnError)
-	dbPath := fs.String("db", "", "путь к файлу sqlite")
-	usersCSV := fs.String("users", "", "CSV с юзерами: name,user_a,user_b[,enabled]")
-	foldersCSV := fs.String("folders", "", "CSV с парами папок: folder_a,folder_b")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *dbPath == "" {
-		return fmt.Errorf("не задан -db")
-	}
-	if *usersCSV == "" && *foldersCSV == "" {
-		return fmt.Errorf("нужен хотя бы один из -users / -folders")
-	}
-	st, err := store.Open(*dbPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	if *foldersCSV != "" {
-		n, err := importFoldersCSV(st, *foldersCSV)
-		if err != nil {
-			return err
+	var usersCSV, foldersCSV *string
+	return withStore("db-import-csv", args, func(fs *flag.FlagSet) {
+		usersCSV = fs.String("users", "", "CSV с юзерами: name,user_a,user_b[,enabled]")
+		foldersCSV = fs.String("folders", "", "CSV с парами папок: folder_a,folder_b")
+	}, func(st *store.Store, _ *flag.FlagSet) error {
+		if *usersCSV == "" && *foldersCSV == "" {
+			return fmt.Errorf("нужен хотя бы один из -users / -folders")
 		}
-		fmt.Printf("пар папок импортировано: %d\n", n)
-	}
-	if *usersCSV != "" {
-		n, err := importUsersCSV(st, *usersCSV)
-		if err != nil {
-			return err
+		if *foldersCSV != "" {
+			n, err := importFoldersCSV(st, *foldersCSV)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("пар папок импортировано: %d\n", n)
 		}
-		fmt.Printf("юзеров импортировано: %d\n", n)
-	}
-	return nil
+		if *usersCSV != "" {
+			n, err := importUsersCSV(st, *usersCSV)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("юзеров импортировано: %d\n", n)
+		}
+		return nil
+	})
 }
 
 func readCSV(path string) ([][]string, error) {
@@ -229,13 +202,10 @@ func parseBool(s string) bool {
 }
 
 func cmdDBList(args []string) error {
-	fs := flag.NewFlagSet("db-list", flag.ContinueOnError)
-	st, err := openStore(fs, args)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
+	return withStore("db-list", args, nil, cmdDBListRun)
+}
 
+func cmdDBListRun(st *store.Store, _ *flag.FlagSet) error {
 	folders, err := st.ListFolderPairs()
 	if err != nil {
 		return err

@@ -5,14 +5,18 @@ package mailbox
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-imap/commands"
 	"github.com/emersion/go-sasl"
 
 	"imapsync/config"
@@ -24,11 +28,20 @@ type Client struct {
 	c      *client.Client
 	server string // host:port - для сообщений об ошибках
 	user   string // целевой пользователь (authzid)
+
+	closeOnce sync.Once
+	closed    chan struct{}
+
+	folders []*imap.MailboxInfo // кэш LIST на время жизни соединения
 }
 
 // Connect устанавливает TLS-соединение и авторизуется как targetUser через
 // мастер-учётку сервера (SASL PLAIN: authcid = master_user, authzid = targetUser).
-func Connect(srv config.Server, targetUser string, dialTimeout time.Duration, insecureTLS bool) (*Client, error) {
+//
+// ioTimeout - дедлайн на одну IMAP-операцию. Кроме того, при отмене ctx
+// TCP-соединение принудительно закрывается (Terminate), что прерывает висящий
+// вызов - go-imap v1 сам по себе не реагирует на context.
+func Connect(ctx context.Context, srv config.Server, targetUser string, dialTimeout, ioTimeout time.Duration, insecureTLS bool) (*Client, error) {
 	addr := srv.Addr()
 
 	dialer := &net.Dialer{Timeout: dialTimeout}
@@ -42,8 +55,8 @@ func Connect(srv config.Server, targetUser string, dialTimeout time.Duration, in
 		return nil, fmt.Errorf("подключение к %s (юзер %s): %w", addr, targetUser, err)
 	}
 
-	// Таймаут на последующие операции ввода-вывода.
-	imapCli.Timeout = dialTimeout
+	// Дедлайн на каждую последующую операцию ввода-вывода.
+	imapCli.Timeout = ioTimeout
 
 	// SASL PLAIN с authzid: identity(authzid)=целевой юзер, username(authcid)=мастер.
 	auth := sasl.NewPlainClient(targetUser, srv.MasterUser, srv.MasterPass)
@@ -52,33 +65,90 @@ func Connect(srv config.Server, targetUser string, dialTimeout time.Duration, in
 		return nil, fmt.Errorf("имперсонация %s на %s через мастера %s: %w", targetUser, addr, srv.MasterUser, err)
 	}
 
-	return &Client{c: imapCli, server: addr, user: targetUser}, nil
+	cl := &Client{c: imapCli, server: addr, user: targetUser, closed: make(chan struct{})}
+	go cl.watch(ctx)
+	return cl, nil
+}
+
+// watch закрывает соединение при отмене ctx, прерывая любой висящий вызов.
+func (cl *Client) watch(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		_ = cl.c.Terminate()
+	case <-cl.closed:
+	}
 }
 
 // Logout закрывает сессию. Ошибку логаута считаем некритичной.
 func (cl *Client) Logout() {
+	cl.closeOnce.Do(func() { close(cl.closed) })
 	_ = cl.c.Logout()
 }
 
-// FindFolder ищет папку по точному имени среди LIST "" "*" и возвращает её имя
-// как его вернул сервер (важно для регистра/разделителей). Второе значение -
-// найдена ли папка.
-func (cl *Client) FindFolder(name string) (string, bool, error) {
-	ch := make(chan *imap.MailboxInfo, 32)
+// известные SPECIAL-USE атрибуты (RFC 6154).
+var specialUseAttrs = map[string]bool{
+	`\All`: true, `\Archive`: true, `\Drafts`: true, `\Flagged`: true,
+	`\Junk`: true, `\Sent`: true, `\Trash`: true,
+}
+
+func (cl *Client) listFolders() ([]*imap.MailboxInfo, error) {
+	if cl.folders != nil {
+		return cl.folders, nil
+	}
+	ch := make(chan *imap.MailboxInfo, 64)
 	done := make(chan error, 1)
 	go func() { done <- cl.c.List("", "*", ch) }()
 
-	found := ""
-	ok := false
+	var out []*imap.MailboxInfo
 	for m := range ch {
-		if m.Name == name {
-			found, ok = m.Name, true
-		}
+		out = append(out, m)
 	}
 	if err := <-done; err != nil {
-		return "", false, fmt.Errorf("LIST на %s (юзер %s): %w", cl.server, cl.user, err)
+		return nil, fmt.Errorf("LIST на %s (юзер %s): %w", cl.server, cl.user, err)
 	}
-	return found, ok, nil
+	cl.folders = out
+	return out, nil
+}
+
+// ResolveFolder приводит имя папки из конфига к реальному имени на сервере:
+//  1. точное совпадение;
+//  2. если name - это SPECIAL-USE токен (например "\Sent") - ищем папку с таким
+//     атрибутом;
+//  3. регистронезависимое совпадение.
+//
+// Если папка не найдена - ошибка со списком доступных папок.
+func (cl *Client) ResolveFolder(name string) (string, error) {
+	infos, err := cl.listFolders()
+	if err != nil {
+		return "", err
+	}
+
+	if specialUseAttrs[name] {
+		for _, m := range infos {
+			for _, a := range m.Attributes {
+				if strings.EqualFold(a, name) {
+					return m.Name, nil
+				}
+			}
+		}
+	}
+	for _, m := range infos {
+		if m.Name == name {
+			return m.Name, nil
+		}
+	}
+	for _, m := range infos {
+		if strings.EqualFold(m.Name, name) {
+			return m.Name, nil
+		}
+	}
+
+	avail := make([]string, 0, len(infos))
+	for _, m := range infos {
+		avail = append(avail, m.Name)
+	}
+	return "", fmt.Errorf("папка %q не найдена на %s (юзер %s); доступны: %s",
+		name, cl.server, cl.user, strings.Join(avail, ", "))
 }
 
 // Select открывает папку для чтения-записи и возвращает её статус.
@@ -249,9 +319,27 @@ func (cl *Client) FetchFull(uid uint32) ([]byte, error) {
 
 // Append дописывает письмо в папку, сохраняя флаги и внутреннюю дату оригинала.
 func (cl *Client) Append(folder string, flags []string, date time.Time, body []byte) error {
+	_, err := cl.AppendGetUID(folder, flags, date, body)
+	return err
+}
+
+// AppendGetUID дописывает письмо и пытается вернуть присвоенный ему UID из
+// ответа [APPENDUID] (расширение UIDPLUS, RFC 4315). Если сервер его не
+// поддерживает - uid == 0 и ошибки нет.
+func (cl *Client) AppendGetUID(folder string, flags []string, date time.Time, body []byte) (uint32, error) {
 	// *bytes.Buffer реализует imap.Literal (io.Reader + Len() int).
-	if err := cl.c.Append(folder, flags, date, bytes.NewBuffer(body)); err != nil {
-		return fmt.Errorf("APPEND в %q на %s (юзер %s): %w", folder, cl.server, cl.user, err)
+	cmd := &commands.Append{Mailbox: folder, Flags: flags, Date: date, Message: bytes.NewBuffer(body)}
+	status, err := cl.c.Execute(cmd, nil)
+	if err != nil {
+		return 0, fmt.Errorf("APPEND в %q на %s (юзер %s): %w", folder, cl.server, cl.user, err)
 	}
-	return nil
+	if err := status.Err(); err != nil {
+		return 0, fmt.Errorf("APPEND в %q на %s (юзер %s): %w", folder, cl.server, cl.user, err)
+	}
+	if status.Code == "APPENDUID" && len(status.Arguments) == 2 {
+		if uid, err := imap.ParseNumber(status.Arguments[1]); err == nil {
+			return uid, nil
+		}
+	}
+	return 0, nil
 }

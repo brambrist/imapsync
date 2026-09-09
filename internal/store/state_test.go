@@ -10,9 +10,9 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 	const user, pair, side = "ivanov", "Sent\x00Отправленные", "a"
 
 	// первый вызов - пусто
-	uidv, msgs, err := st.LoadEndpoint(user, pair, side)
-	if err != nil || uidv != 0 || len(msgs) != 0 {
-		t.Fatalf("пустой эндпоинт: uidv=%d msgs=%d err=%v", uidv, len(msgs), err)
+	ep, msgs, err := st.LoadEndpoint(user, pair, side)
+	if err != nil || ep.Exists || len(msgs) != 0 {
+		t.Fatalf("пустой эндпоинт: %+v msgs=%d err=%v", ep, len(msgs), err)
 	}
 
 	now := time.Unix(1_700_000_000, 0)
@@ -23,16 +23,20 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 	if err := st.PutCachedMsgs(user, pair, side, in); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveEndpoint(user, pair, side, 42); err != nil {
+	resync := time.Unix(1_700_000_500, 0)
+	if err := st.SaveEndpoint(user, pair, side, 42, resync); err != nil {
 		t.Fatal(err)
 	}
 
-	uidv, msgs, err = st.LoadEndpoint(user, pair, side)
+	ep, msgs, err = st.LoadEndpoint(user, pair, side)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uidv != 42 || len(msgs) != 2 {
-		t.Fatalf("после записи: uidv=%d msgs=%d", uidv, len(msgs))
+	if !ep.Exists || ep.UIDValidity != 42 || len(msgs) != 2 {
+		t.Fatalf("после записи: %+v msgs=%d", ep, len(msgs))
+	}
+	if !ep.FullResyncAt.Equal(resync) {
+		t.Errorf("full_resync_at: %v != %v", ep.FullResyncAt, resync)
 	}
 	if got := msgs[10]; got.MsgID != "a@c" || len(got.Flags) != 1 || got.Flags[0] != `\Seen` {
 		t.Errorf("uid 10: %+v", got)
@@ -54,9 +58,9 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 	if err := st.ResetEndpoint(user, pair, side); err != nil {
 		t.Fatal(err)
 	}
-	uidv, msgs, _ = st.LoadEndpoint(user, pair, side)
-	if uidv != 0 || len(msgs) != 0 {
-		t.Fatalf("после reset: uidv=%d msgs=%d", uidv, len(msgs))
+	ep, msgs, _ = st.LoadEndpoint(user, pair, side)
+	if ep.Exists || len(msgs) != 0 {
+		t.Fatalf("после reset: %+v msgs=%d", ep, len(msgs))
 	}
 }
 
@@ -65,12 +69,32 @@ func TestUpsertCachedMsgUpdatesRow(t *testing.T) {
 	const user, pair, side = "u", "p", "b"
 	_ = st.PutCachedMsgs(user, pair, side, []CachedMsg{{Uid: 1, MsgID: "old", Surrogate: "s"}})
 	_ = st.PutCachedMsgs(user, pair, side, []CachedMsg{{Uid: 1, MsgID: "new", Surrogate: "s"}})
-	_ = st.SaveEndpoint(user, pair, side, 1)
+	_ = st.SaveEndpoint(user, pair, side, 1, time.Time{})
 
 	_, msgs, _ := st.LoadEndpoint(user, pair, side)
 	if len(msgs) != 1 || msgs[1].MsgID != "new" {
 		t.Fatalf("upsert не обновил: %+v", msgs)
 	}
+}
+
+func TestOpenExclusiveBlocksSecondProcess(t *testing.T) {
+	path := t.TempDir() + "/x.db"
+	st1, err := OpenExclusive(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenExclusive(path); err == nil {
+		t.Fatal("второй OpenExclusive должен был не пройти")
+	}
+	if err := st1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// после закрытия - снова можно
+	st2, err := OpenExclusive(path)
+	if err != nil {
+		t.Fatalf("после Close блокировка не снялась: %v", err)
+	}
+	st2.Close()
 }
 
 func TestUserStatusPreservesLastOKOnError(t *testing.T) {

@@ -5,8 +5,12 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -23,7 +27,7 @@ type Syncer struct {
 	cfg   *config.Config
 	stats *stats.Collector
 	logf  stats.Logf
-	state *store.Store // != nil => инкрементальная сверка через кэш
+	state *store.Store // != nil => инкрементальная сверка через кэш и запись user_status
 }
 
 // New создаёт синкер с полной сверкой папок каждый цикл.
@@ -32,7 +36,7 @@ func New(cfg *config.Config, coll *stats.Collector, logf stats.Logf) *Syncer {
 }
 
 // NewWithState создаёт синкер; если state != nil, включается инкрементальная
-// сверка (UID SEARCH + кэш разбора).
+// сверка (при cfg.StateCache) и запись статуса юзеров.
 func NewWithState(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st *store.Store) *Syncer {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -49,6 +53,9 @@ var copyableFlags = map[string]bool{
 	`\Draft`:    true,
 }
 
+// incremental - true, если для этого синкера включён режим кэша состояния.
+func (s *Syncer) incremental() bool { return s.cfg.StateCache && s.state != nil }
+
 // SyncUser обрабатывает пользователя целиком. Ошибки не пробрасываются наружу -
 // они логируются с контекстом и попадают в статистику юзера; прерывание по
 // ctx фиксируется как ошибка.
@@ -60,116 +67,233 @@ func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
 		s.persistStatus(u.Name, us)
 	}()
 
-	dial := s.cfg.DialTimeout.Std()
-
-	ca, err := mailbox.Connect(s.cfg.ServerA, u.UserA, dial, s.cfg.InsecureTLS)
-	if err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s: %w", u.Name, err))
+	sess := &session{s: s, ctx: ctx, u: u, us: us}
+	if !sess.connect() {
 		return
 	}
-	defer ca.Logout()
-
-	cb, err := mailbox.Connect(s.cfg.ServerB, u.UserB, dial, s.cfg.InsecureTLS)
-	if err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s: %w", u.Name, err))
-		return
-	}
-	defer cb.Logout()
+	defer sess.close()
 
 	for _, fp := range s.cfg.Folders {
 		if err := ctx.Err(); err != nil {
 			s.recordErr(us, fmt.Errorf("юзер %s: обработка прервана: %w", u.Name, err))
 			return
 		}
-		s.syncFolderPair(ctx, u, us, ca, cb, fp)
+		err := sess.syncPair(fp)
+		if err == nil {
+			continue
+		}
+		s.recordErr(us, err)
+		if isConnErr(err) {
+			s.logf("юзер %s: соединение потеряно, переподключение", u.Name)
+			if !sess.reconnect() {
+				return
+			}
+			if err := sess.syncPair(fp); err != nil {
+				s.recordErr(us, err)
+			}
+		}
 	}
 }
 
-// syncFolderPair синхронизирует одну пару папок в обе стороны.
-func (s *Syncer) syncFolderPair(ctx context.Context, u config.User, us *stats.UserStats, ca, cb *mailbox.Client, fp config.FolderPair) {
-	stA, err := ca.Select(fp.A)
+// session - состояние обработки одного юзера: оба соединения, контекст, счётчики.
+type session struct {
+	s   *Syncer
+	ctx context.Context
+	u   config.User
+	us  *stats.UserStats
+	a   *mailbox.Client
+	b   *mailbox.Client
+}
+
+func (sess *session) connect() bool {
+	a, err := sess.s.dial(sess.ctx, sess.s.cfg.ServerA, sess.u.UserA)
 	if err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка A %q: %w", u.Name, fp.A, err))
-		return
+		sess.s.recordErr(sess.us, fmt.Errorf("юзер %s: %w", sess.u.Name, err))
+		return false
 	}
-	stB, err := cb.Select(fp.B)
+	b, err := sess.s.dial(sess.ctx, sess.s.cfg.ServerB, sess.u.UserB)
 	if err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка B %q: %w", u.Name, fp.B, err))
-		return
+		a.Logout()
+		sess.s.recordErr(sess.us, fmt.Errorf("юзер %s: %w", sess.u.Name, err))
+		return false
+	}
+	sess.a, sess.b = a, b
+	return true
+}
+
+func (sess *session) reconnect() bool {
+	sess.close()
+	return sess.connect()
+}
+
+func (sess *session) close() {
+	if sess.a != nil {
+		sess.a.Logout()
+		sess.a = nil
+	}
+	if sess.b != nil {
+		sess.b.Logout()
+		sess.b = nil
+	}
+}
+
+// dial подключается к серверу с повторами при транзиентных ошибках.
+func (s *Syncer) dial(ctx context.Context, srv config.Server, user string) (*mailbox.Client, error) {
+	attempts := s.cfg.ConnectRetries + 1
+	var lastErr error
+	for i := range attempts {
+		if i > 0 {
+			backoff := s.cfg.RetryBackoff.Std() * (1 << (i - 1))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			s.logf("повтор подключения к %s (юзер %s), попытка %d/%d", srv.Addr(), user, i+1, attempts)
+		}
+		cl, err := mailbox.Connect(ctx, srv, user, s.cfg.DialTimeout.Std(), s.cfg.IOTimeout.Std(), s.cfg.InsecureTLS)
+		if err == nil {
+			return cl, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// syncPair синхронизирует одну пару папок в обе стороны. Возвращает ошибку
+// уровня папки (Resolve/Select/Fetch/UID SEARCH); ошибки отдельных писем
+// логируются внутри и не возвращаются.
+func (sess *session) syncPair(fp config.FolderPair) error {
+	s, u, us := sess.s, sess.u, sess.us
+
+	folderA, err := sess.a.ResolveFolder(fp.A)
+	if err != nil {
+		return fmt.Errorf("юзер %s, папка A %q: %w", u.Name, fp.A, err)
+	}
+	folderB, err := sess.b.ResolveFolder(fp.B)
+	if err != nil {
+		return fmt.Errorf("юзер %s, папка B %q: %w", u.Name, fp.B, err)
 	}
 
-	idxA, okA := s.indexFolder(us, ca, "a", u, fp, fp.A, stA)
-	idxB, okB := s.indexFolder(us, cb, "b", u, fp, fp.B, stB)
-	if !okA || !okB {
-		return
+	stA, err := sess.a.Select(folderA)
+	if err != nil {
+		return fmt.Errorf("юзер %s, папка A %q: %w", u.Name, folderA, err)
+	}
+	stB, err := sess.b.Select(folderB)
+	if err != nil {
+		return fmt.Errorf("юзер %s, папка B %q: %w", u.Name, folderB, err)
+	}
+
+	idxA, err := s.indexFolder(sess, "a", fp, folderA, stA)
+	if err != nil {
+		return err
+	}
+	idxB, err := s.indexFolder(sess, "b", fp, folderB, stB)
+	if err != nil {
+		return err
 	}
 
 	// Обе дельты считаем ДО каких-либо append, чтобы только что скопированное
 	// письмо не поехало обратно в том же цикле.
 	missingOnB, missingOnA := dedup.Delta(idxA, idxB)
 
-	// уже присутствующие на другой стороне (не копируем) - в дубли.
 	skipped := (idxA.Len() - len(missingOnB)) + (idxB.Len() - len(missingOnA))
 	if skipped > 0 {
 		us.IncSkippedDup(skipped)
 	}
 
-	copiedAB := s.copyMissing(ctx, us, ca, cb, fp.B, missingOnB, "A->B", u.Name, fp.A)
+	pair := store.PairKey(fp.A, fp.B)
+
+	copiedAB, cacheB := s.copyMissing(sess, sess.a, sess.b, folderB, missingOnB, "A->B", folderA)
 	us.IncCopiedAToB(copiedAB)
 
-	copiedBA := s.copyMissing(ctx, us, cb, ca, fp.A, missingOnA, "B->A", u.Name, fp.B)
+	copiedBA, cacheA := s.copyMissing(sess, sess.b, sess.a, folderA, missingOnA, "B->A", folderB)
 	us.IncCopiedBToA(copiedBA)
+
+	// Скопированные письма, для которых сервер вернул APPENDUID, сразу кладём в
+	// кэш - чтобы не перечитывать их заголовки в следующем цикле.
+	if s.incremental() {
+		if len(cacheB) > 0 {
+			if err := s.state.PutCachedMsgs(u.Name, pair, "b", cacheB); err != nil {
+				s.recordErr(us, fmt.Errorf("юзер %s, папка B %q: до-запись кэша: %w", u.Name, folderB, err))
+			}
+		}
+		if len(cacheA) > 0 {
+			if err := s.state.PutCachedMsgs(u.Name, pair, "a", cacheA); err != nil {
+				s.recordErr(us, fmt.Errorf("юзер %s, папка A %q: до-запись кэша: %w", u.Name, folderA, err))
+			}
+		}
+	}
+	return nil
 }
 
 // indexFolder строит индекс писем одной стороны папки. side - "a" | "b".
-// Возвращает (индекс, true) при успехе; (nil, false) если сверку по этой паре
-// надо пропустить (ошибка уже залогирована).
-func (s *Syncer) indexFolder(us *stats.UserStats, cl *mailbox.Client, side string, u config.User, fp config.FolderPair, folder string, st *imap.MailboxStatus) (*dedup.Index, bool) {
-	if s.cfg.StateCache && s.state != nil {
-		return s.indexFolderIncremental(us, cl, side, u, fp, folder, st)
+func (s *Syncer) indexFolder(sess *session, side string, fp config.FolderPair, folder string, st *imap.MailboxStatus) (*dedup.Index, error) {
+	cl := sess.a
+	if side == "b" {
+		cl = sess.b
 	}
-	return s.indexFolderFull(us, cl, side, u, folder, st)
+	if s.incremental() {
+		return s.indexFolderIncremental(sess, cl, side, fp, folder, st)
+	}
+	return s.indexFolderFull(sess, cl, side, folder, st)
 }
 
 // indexFolderFull забирает и разбирает заголовки всех писем папки.
-func (s *Syncer) indexFolderFull(us *stats.UserStats, cl *mailbox.Client, side string, u config.User, folder string, st *imap.MailboxStatus) (*dedup.Index, bool) {
+func (s *Syncer) indexFolderFull(sess *session, cl *mailbox.Client, side, folder string, st *imap.MailboxStatus) (*dedup.Index, error) {
 	msgs, err := cl.FetchHeaders(st.Messages, s.cfg.FetchBatchSize)
 	if err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: %w", u.Name, side, folder, err))
-		return nil, false
+		return nil, fmt.Errorf("юзер %s, папка %s %q: %w", sess.u.Name, side, folder, err)
 	}
 	idx, errs := dedup.Build(msgs, s.cfg.HashHeader)
 	for _, e := range errs {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: разбор: %w", u.Name, side, folder, e))
+		s.recordErr(sess.us, fmt.Errorf("юзер %s, папка %s %q: разбор: %w", sess.u.Name, side, folder, e))
 	}
-	return idx, true
+	return idx, nil
 }
 
 // indexFolderIncremental берёт список UID через UID SEARCH, фетчит заголовки
 // только для новых писем, остальное поднимает из кэша sqlite; кэш при этом
-// обновляется (новые письма, удалённые UID, UIDVALIDITY).
-func (s *Syncer) indexFolderIncremental(us *stats.UserStats, cl *mailbox.Client, side string, u config.User, fp config.FolderPair, folder string, st *imap.MailboxStatus) (*dedup.Index, bool) {
+// обновляется. Периодически (full_resync_every) делает полный пере-скан.
+func (s *Syncer) indexFolderIncremental(sess *session, cl *mailbox.Client, side string, fp config.FolderPair, folder string, st *imap.MailboxStatus) (*dedup.Index, error) {
+	u, us := sess.u, sess.us
 	pair := store.PairKey(fp.A, fp.B)
-	ctxErr := func(err error) (*dedup.Index, bool) {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: %w", u.Name, side, folder, err))
-		return nil, false
+	wrap := func(err error) error {
+		return fmt.Errorf("юзер %s, папка %s %q: %w", u.Name, side, folder, err)
 	}
 
-	savedUIDV, cached, err := s.state.LoadEndpoint(u.Name, pair, side)
+	ep, cached, err := s.state.LoadEndpoint(u.Name, pair, side)
 	if err != nil {
-		return ctxErr(err)
+		return nil, wrap(err)
 	}
-	if savedUIDV != 0 && savedUIDV != st.UidValidity {
-		s.logf("юзер %s, папка %s %q: UIDVALIDITY изменился (%d -> %d), полный пере-скан", u.Name, side, folder, savedUIDV, st.UidValidity)
+
+	resyncAt := ep.FullResyncAt
+	reset := func(reason string) error {
+		if len(cached) > 0 {
+			s.logf("юзер %s, папка %s %q: %s, полный пере-скан", u.Name, side, folder, reason)
+		}
 		if err := s.state.ResetEndpoint(u.Name, pair, side); err != nil {
-			return ctxErr(fmt.Errorf("сброс кэша: %w", err))
+			return wrap(fmt.Errorf("сброс кэша: %w", err))
 		}
 		cached = map[uint32]store.CachedMsg{}
+		resyncAt = time.Now()
+		return nil
+	}
+
+	switch {
+	case ep.Exists && ep.UIDValidity != st.UidValidity:
+		if err := reset(fmt.Sprintf("UIDVALIDITY изменился (%d -> %d)", ep.UIDValidity, st.UidValidity)); err != nil {
+			return nil, err
+		}
+	case s.cfg.FullResyncEvery.Std() > 0 && time.Since(ep.FullResyncAt) >= s.cfg.FullResyncEvery.Std():
+		if err := reset("плановый полный пере-скан"); err != nil {
+			return nil, err
+		}
 	}
 
 	curUIDs, err := cl.UIDSearchAll()
 	if err != nil {
-		return ctxErr(err)
+		return nil, wrap(err)
 	}
 	slices.Sort(curUIDs)
 
@@ -190,14 +314,14 @@ func (s *Syncer) indexFolderIncremental(us *stats.UserStats, cl *mailbox.Client,
 
 	fetched, err := cl.FetchHeadersByUID(newUIDs, s.cfg.FetchBatchSize)
 	if err != nil {
-		return ctxErr(err)
+		return nil, wrap(err)
 	}
 
 	fresh := make([]store.CachedMsg, 0, len(fetched))
 	for _, m := range fetched {
 		f, perr := mailbox.ParseFields(m.Header, s.cfg.HashHeader)
 		if perr != nil {
-			s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: разбор uid=%d: %w", u.Name, side, folder, m.Uid, perr))
+			s.recordErr(us, wrap(fmt.Errorf("разбор uid=%d: %w", m.Uid, perr)))
 			continue
 		}
 		cm := store.CachedMsg{
@@ -208,21 +332,20 @@ func (s *Syncer) indexFolderIncremental(us *stats.UserStats, cl *mailbox.Client,
 		cached[m.Uid] = cm
 	}
 
-	// Обновляем кэш. Ошибки записи не фатальны для сверки в этом цикле - просто
-	// в следующем цикле часть писем перечитается заново.
+	// Обновляем кэш. Ошибки записи не фатальны - в следующем цикле перечитается.
 	if err := s.state.PutCachedMsgs(u.Name, pair, side, fresh); err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: запись кэша: %w", u.Name, side, folder, err))
+		s.recordErr(us, wrap(fmt.Errorf("запись кэша: %w", err)))
 	}
 	if len(goneUIDs) > 0 {
 		if err := s.state.DeleteCachedMsgs(u.Name, pair, side, goneUIDs); err != nil {
-			s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: чистка кэша: %w", u.Name, side, folder, err))
+			s.recordErr(us, wrap(fmt.Errorf("чистка кэша: %w", err)))
 		}
 		for _, uid := range goneUIDs {
 			delete(cached, uid)
 		}
 	}
-	if err := s.state.SaveEndpoint(u.Name, pair, side, st.UidValidity); err != nil {
-		s.recordErr(us, fmt.Errorf("юзер %s, папка %s %q: запись эндпоинта: %w", u.Name, side, folder, err))
+	if err := s.state.SaveEndpoint(u.Name, pair, side, st.UidValidity, resyncAt); err != nil {
+		s.recordErr(us, wrap(fmt.Errorf("запись эндпоинта: %w", err)))
 	}
 
 	inputs := make([]dedup.Input, 0, len(curUIDs))
@@ -235,6 +358,7 @@ func (s *Syncer) indexFolderIncremental(us *stats.UserStats, cl *mailbox.Client,
 			Uid:          cm.Uid,
 			Flags:        cm.Flags,
 			InternalDate: cm.InternalDate,
+			MsgID:        cm.MsgID,
 			Surrogate:    cm.Surrogate,
 			Keys:         mailbox.MatchKeysFrom(cm.MsgID, cm.XHash, cm.Surrogate),
 		})
@@ -243,45 +367,51 @@ func (s *Syncer) indexFolderIncremental(us *stats.UserStats, cl *mailbox.Client,
 		s.logf("юзер %s, папка %s %q: инкрементально - новых %d, удалено %d, всего %d",
 			u.Name, side, folder, len(newUIDs), len(goneUIDs), len(inputs))
 	}
-	return dedup.BuildFrom(inputs), true
+	return dedup.BuildFrom(inputs), nil
 }
 
 // copyMissing копирует письма entries из src в папку dstFolder на dst.
-// Возвращает число успешно скопированных.
-func (s *Syncer) copyMissing(ctx context.Context, us *stats.UserStats, src, dst *mailbox.Client, dstFolder string, entries []*dedup.Entry, dir, user, srcFolder string) int {
+// Возвращает число успешно скопированных и (в инкрементальном режиме) их
+// закэшированные представления для стороны назначения.
+func (s *Syncer) copyMissing(sess *session, src, dst *mailbox.Client, dstFolder string, entries []*dedup.Entry, dir, srcFolder string) (int, []store.CachedMsg) {
 	n := 0
+	var cache []store.CachedMsg
 	for i, e := range entries {
 		if i%64 == 0 {
-			if err := ctx.Err(); err != nil {
-				s.recordErr(us, fmt.Errorf("юзер %s, %s (%q): прервано: %w", user, dir, srcFolder, err))
-				return n
+			if err := sess.ctx.Err(); err != nil {
+				s.recordErr(sess.us, fmt.Errorf("юзер %s, %s (%q): прервано: %w", sess.u.Name, dir, srcFolder, err))
+				return n, cache
 			}
 		}
-		if err := s.copyOne(src, dst, dstFolder, e); err != nil {
-			s.recordErr(us, fmt.Errorf("юзер %s, %s (%q -> %q), uid=%d: %w", user, dir, srcFolder, dstFolder, e.Uid, err))
+		uid, err := s.copyOne(src, dst, dstFolder, e)
+		if err != nil {
+			s.recordErr(sess.us, fmt.Errorf("юзер %s, %s (%q -> %q), uid=%d: %w", sess.u.Name, dir, srcFolder, dstFolder, e.Uid, err))
 			continue
 		}
 		n++
+		if s.incremental() && uid != 0 {
+			cache = append(cache, store.CachedMsg{
+				Uid: uid, MsgID: e.MsgID, XHash: e.Surrogate, Surrogate: e.Surrogate,
+				InternalDate: e.InternalDate, Flags: filterFlags(e.Flags),
+			})
+		}
 	}
-	return n
+	return n, cache
 }
 
 // copyOne забирает письмо целиком, проставляет суррогатный хеш в кастомный
 // заголовок и дописывает в целевую папку с сохранением флагов и внутренней даты.
-func (s *Syncer) copyOne(src, dst *mailbox.Client, dstFolder string, e *dedup.Entry) error {
+// Возвращает присвоенный UID (0, если сервер не поддерживает APPENDUID).
+func (s *Syncer) copyOne(src, dst *mailbox.Client, dstFolder string, e *dedup.Entry) (uint32, error) {
 	raw, err := src.FetchFull(e.Uid)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Суррогатный хеш пишем всегда - чтобы на следующих проходах письмо
 	// находилось по заголовку даже если Message-ID появится/исчезнет.
 	raw = mailbox.InjectHashHeader(raw, s.cfg.HashHeader, e.Surrogate)
 
-	date := e.InternalDate
-	if date.IsZero() {
-		date = time.Time{} // сервер проставит текущую
-	}
-	return dst.Append(dstFolder, filterFlags(e.Flags), date, raw)
+	return dst.AppendGetUID(dstFolder, filterFlags(e.Flags), e.InternalDate, raw)
 }
 
 // filterFlags оставляет только переносимые флаги.
@@ -295,6 +425,31 @@ func filterFlags(flags []string) []string {
 	return out
 }
 
+// isConnErr - похоже ли на потерю соединения (повод переподключиться).
+func isConnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
+	}
+	msg := err.Error()
+	for _, sub := range []string{
+		"connection reset", "broken pipe", "use of closed", "connection closed",
+		"connection refused", "unexpected EOF", "i/o timeout", "TLS handshake",
+		"imap: connection closed",
+	} {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // recordErr логирует ошибку с контекстом и учитывает её в статистике юзера.
 func (s *Syncer) recordErr(us *stats.UserStats, err error) {
 	us.AddError(err)
@@ -302,8 +457,7 @@ func (s *Syncer) recordErr(us *stats.UserStats, err error) {
 }
 
 // persistStatus сохраняет итог прохода по юзеру в таблицу user_status (если
-// открыт store). Позволяет видеть по БД, когда и с каким результатом
-// отработал синк по каждому пользователю.
+// открыт store).
 func (s *Syncer) persistStatus(name string, us *stats.UserStats) {
 	if s.state == nil {
 		return

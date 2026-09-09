@@ -83,7 +83,7 @@ func startIMAP(t *testing.T, cert tls.Certificate) config.Server {
 // appendMsg дописывает письмо в INBOX указанного сервера.
 func appendMsg(t *testing.T, srv config.Server, subject, msgID string) {
 	t.Helper()
-	cl, err := mailbox.Connect(srv, "username", 5*time.Second, true)
+	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -99,7 +99,7 @@ func appendMsg(t *testing.T, srv config.Server, subject, msgID string) {
 // inboxMessageIDs возвращает нормализованные Message-ID всех писем в INBOX.
 func inboxMessageIDs(t *testing.T, srv config.Server) []string {
 	t.Helper()
-	cl, err := mailbox.Connect(srv, "username", 5*time.Second, true)
+	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -175,6 +175,32 @@ func TestSyncUserConvergesBothSides(t *testing.T) {
 	}
 }
 
+func TestSyncUserResolvesFolderCaseInsensitive(t *testing.T) {
+	cert := selfSignedCert(t)
+	srvA := startIMAP(t, cert)
+	srvB := startIMAP(t, cert)
+	appendMsg(t, srvA, "a", "ci-a@corp")
+
+	cfg := &config.Config{
+		ServerA: srvA, ServerB: srvB,
+		InsecureTLS:    true,
+		FetchBatchSize: 10,
+		HashHeader:     "X-Imapsync-Hash",
+		DialTimeout:    config.Duration(5 * time.Second),
+		Folders:        []config.FolderPair{{A: "inbox", B: "InBoX"}}, // не совпадает по регистру с "INBOX"
+	}
+	coll := stats.New()
+	coll.BeginCycle()
+	New(cfg, coll, t.Logf).SyncUser(context.Background(), config.User{Name: "u", UserA: "username", UserB: "username"})
+
+	if r := coll.Snapshot(); r.Total.Errors != 0 {
+		t.Fatalf("ошибки при синке с папкой в другом регистре: %+v", r.Users)
+	}
+	if got := inboxMessageIDs(t, srvB); fmt.Sprint(got) != fmt.Sprint([]string{"0000000@localhost/", "ci-a@corp"}) {
+		t.Errorf("B = %v", got)
+	}
+}
+
 func TestSyncUserIncrementalWithCache(t *testing.T) {
 	cert := selfSignedCert(t)
 	srvA := startIMAP(t, cert)
@@ -218,9 +244,9 @@ func TestSyncUserIncrementalWithCache(t *testing.T) {
 
 	// кэш заполнен
 	pair := store.PairKey("INBOX", "INBOX")
-	uidv, msgs, err := st.LoadEndpoint("u", pair, "a")
-	if err != nil || uidv == 0 || len(msgs) != 2 {
-		t.Fatalf("кэш A: uidv=%d msgs=%d err=%v", uidv, len(msgs), err)
+	ep, msgs, err := st.LoadEndpoint("u", pair, "a")
+	if err != nil || !ep.Exists || len(msgs) < 2 {
+		t.Fatalf("кэш A: %+v msgs=%d err=%v", ep, len(msgs), err)
 	}
 
 	// статус записан
@@ -241,5 +267,51 @@ func TestSyncUserIncrementalWithCache(t *testing.T) {
 	_, msgsB2, _ := st.LoadEndpoint("u", pair, "b")
 	if len(msgsA2) != 3 || len(msgsB2) != 3 {
 		t.Errorf("кэш после цикла 2: A=%d B=%d, ожидали 3/3", len(msgsA2), len(msgsB2))
+	}
+}
+
+func TestIncrementalFullResync(t *testing.T) {
+	cert := selfSignedCert(t)
+	srvA := startIMAP(t, cert)
+	srvB := startIMAP(t, cert)
+	appendMsg(t, srvA, "fr", "fr-a@corp")
+
+	st, err := store.Open(t.TempDir() + "/fr.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		ServerA: srvA, ServerB: srvB,
+		InsecureTLS:     true,
+		FetchBatchSize:  10,
+		HashHeader:      "X-Imapsync-Hash",
+		DialTimeout:     config.Duration(5 * time.Second),
+		Folders:         []config.FolderPair{{A: "INBOX", B: "INBOX"}},
+		StateCache:      true,
+		SQLitePath:      "unused",
+		FullResyncEvery: config.Duration(time.Nanosecond), // каждый цикл
+	}
+	usr := config.User{Name: "u", UserA: "username", UserB: "username"}
+	pair := store.PairKey("INBOX", "INBOX")
+
+	run := func() {
+		c := stats.New()
+		c.BeginCycle()
+		NewWithState(cfg, c, t.Logf, st).SyncUser(context.Background(), usr)
+		if r := c.Snapshot(); r.Total.Errors != 0 {
+			t.Fatalf("ошибки: %+v", r.Users)
+		}
+	}
+
+	run()
+	ep1, _, _ := st.LoadEndpoint("u", pair, "a")
+	time.Sleep(5 * time.Millisecond)
+	run()
+	ep2, _, _ := st.LoadEndpoint("u", pair, "a")
+
+	if !ep2.FullResyncAt.After(ep1.FullResyncAt) {
+		t.Errorf("full_resync_at не сдвинулся: %v -> %v", ep1.FullResyncAt, ep2.FullResyncAt)
 	}
 }
