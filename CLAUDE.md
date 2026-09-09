@@ -72,7 +72,8 @@ imapsync/
     endpoint/
       endpoint.go            — интерфейсы Backend/Endpoint (абстракция «конец
                               синхронизации»); синкер знает только о них
-      imap.go                — IMAP-реализация поверх mailbox (Maildir/EWS - потом)
+      imap.go                — IMAP-реализация поверх mailbox
+      maildir.go             — Maildir/Maildir++ на диске (type: maildir, root)
     mailbox/
       client.go             — IMAP-примитивы поверх go-imap v1: connect+TLS,
                               master-login (имперсонация), resolve/select/fetch/append

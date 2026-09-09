@@ -155,6 +155,26 @@ hash_header: "X-Imapsync-Hash"
 Параметры серверов, тайминги и `workers` всегда берутся из YAML. Списки папок и
 юзеров могут храниться в SQLite.
 
+**Тип конца.** По умолчанию оба конца - IMAP. Можно указать `type: maildir` и
+`root` - шаблон пути к Maildir пользователя (`%u` - весь `user_a`/`user_b`,
+`%n` - до `@`, `%d` - домен). Тип задаётся независимо на каждой стороне, так что
+IMAP↔Maildir тоже работает (например миграция с Dovecot на новый сервер):
+
+```yaml
+server_a:
+  type: maildir
+  root: /var/vmail/%d/%n/Maildir
+server_b:
+  host: mail-new.corp.ru
+  master_user: svc_sync
+  master_pass: "SECRET"
+```
+
+Maildir: ID письма = unique-часть имени файла (стабильна при смене флагов и
+`new`↔`cur`); флаги `\Seen \Answered \Flagged \Draft` ↔ буквы `S R F D` в
+`:2,`-суффиксе; `INTERNALDATE` = mtime файла; подпапки (`.Sent` и т.п.)
+создаются автоматически.
+
 ### Конфигурация из SQLite
 
 ```yaml
@@ -273,7 +293,7 @@ cmd/imapsync/        точка входа: диспетчер подкоман�
 config/              YAML-конфиг: загрузка, валидация, дефолты
 internal/
   endpoint/          абстракция «конец синхронизации» (Backend/Endpoint);
-                     imap.go - реализация поверх mailbox (Maildir/EWS - потом)
+                     imap.go (поверх mailbox), maildir.go; EWS - потом
   mailbox/           IMAP-примитивы поверх go-imap: connect+TLS (ctx-aware),
                      master-login, resolve-folder, fetch/UID SEARCH, append; хеши
   dedup/             мультиключевой индекс папки, вычисление дельты

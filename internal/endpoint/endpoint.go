@@ -66,8 +66,11 @@ func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecur
 	switch srv.Type {
 	case "", config.EndpointIMAP:
 		return newIMAPBackend(srv, dialTimeout, ioTimeout, insecureTLS, fetchBatch), nil
+	case config.EndpointMaildir:
+		return newMaildirBackend(srv), nil
 	default:
-		return nil, fmt.Errorf("тип эндпоинта %q не поддерживается (пока только %q)", srv.Type, config.EndpointIMAP)
+		return nil, fmt.Errorf("тип эндпоинта %q не поддерживается (%q или %q)",
+			srv.Type, config.EndpointIMAP, config.EndpointMaildir)
 	}
 }
 

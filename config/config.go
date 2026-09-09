@@ -34,20 +34,23 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 // Типы транспорта для конца синхронизации.
 const (
-	EndpointIMAP = "imap" // единственный поддерживаемый сейчас
+	EndpointIMAP    = "imap"    // IMAP-сервер с мастер-доступом (по умолчанию)
+	EndpointMaildir = "maildir" // локальный Maildir/Maildir++ на диске
 )
 
-// Server описывает один конец синхронизации. Сейчас это всегда IMAP-сервер с
-// мастер-доступом; поле Type - точка расширения под Maildir / EWS и т.п.
+// Server описывает один конец синхронизации.
 //
-// Имперсонация (IMAP) выполняется через SASL PLAIN с authzid: authcid и пароль -
-// мастер-учётки, authzid - целевой пользователь (user_a / user_b).
+//   - type: imap - Host/Port/MasterUser/MasterPass; имперсонация через SASL PLAIN
+//     с authzid (authcid+пароль - мастер, authzid - целевой юзер).
+//   - type: maildir - Root: шаблон пути к Maildir пользователя. Плейсхолдеры:
+//     %u (весь user_a/user_b), %n (локальная часть до @), %d (домен).
 type Server struct {
-	Type       string `yaml:"type"` // "" или "imap"
+	Type       string `yaml:"type"` // "" | "imap" | "maildir"
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
 	MasterUser string `yaml:"master_user"` // authcid для SASL PLAIN
 	MasterPass string `yaml:"master_pass"` // пароль мастер-учётки
+	Root       string `yaml:"root"`        // шаблон пути к Maildir (type: maildir)
 }
 
 // FolderPair - явная пара имён папок на сервере A и на сервере B.
@@ -307,25 +310,32 @@ func (c *Config) ValidateEntities() error {
 func validateServer(name string, s Server) error {
 	switch s.Type {
 	case "", EndpointIMAP:
+		if strings.TrimSpace(s.Host) == "" {
+			return fmt.Errorf("%s: не задан host", name)
+		}
+		if s.Port < 1 || s.Port > 65535 {
+			return fmt.Errorf("%s: некорректный port %d", name, s.Port)
+		}
+		if strings.TrimSpace(s.MasterUser) == "" {
+			return fmt.Errorf("%s: не задан master_user", name)
+		}
+		if strings.TrimSpace(s.MasterPass) == "" {
+			return fmt.Errorf("%s: не задан master_pass", name)
+		}
+	case EndpointMaildir:
+		if strings.TrimSpace(s.Root) == "" {
+			return fmt.Errorf("%s: type maildir - не задан root (шаблон пути к Maildir)", name)
+		}
 	default:
-		return fmt.Errorf("%s: тип %q не поддерживается (пока только %q)", name, s.Type, EndpointIMAP)
-	}
-	if strings.TrimSpace(s.Host) == "" {
-		return fmt.Errorf("%s: не задан host", name)
-	}
-	if s.Port < 1 || s.Port > 65535 {
-		return fmt.Errorf("%s: некорректный port %d", name, s.Port)
-	}
-	if strings.TrimSpace(s.MasterUser) == "" {
-		return fmt.Errorf("%s: не задан master_user", name)
-	}
-	if strings.TrimSpace(s.MasterPass) == "" {
-		return fmt.Errorf("%s: не задан master_pass", name)
+		return fmt.Errorf("%s: тип %q не поддерживается (%q или %q)", name, s.Type, EndpointIMAP, EndpointMaildir)
 	}
 	return nil
 }
 
-// Addr возвращает адрес сервера в форме host:port.
+// Addr возвращает человекочитаемый адрес конца для логов.
 func (s Server) Addr() string {
+	if s.Type == EndpointMaildir {
+		return "maildir:" + s.Root
+	}
 	return fmt.Sprintf("%s:%d", s.Host, s.Port)
 }

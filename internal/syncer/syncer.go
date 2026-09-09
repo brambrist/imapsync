@@ -189,6 +189,9 @@ func (s *Syncer) dial(ctx context.Context, backend endpoint.Backend, user string
 			return ep, nil
 		}
 		lastErr = err
+		if !isConnErr(err) {
+			break // ошибка не похожа на транзиентную (нет каталога, отказ авторизации) - без повторов
+		}
 	}
 	return nil, lastErr
 }

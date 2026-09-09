@@ -2,7 +2,7 @@
 
 Сгруппировано по приоритету. `[РЕШЕНО]` - закрыто; остальное открыто.
 
-Закрыто: A1 (каркас), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
+Закрыто: A1 (каркас + IMAP + Maildir), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
 
 Сверх списка добавлено: `max_fail_streak` - стоп-синк юзера после N ошибок
 подряд (снять: `db-resume-user`).
@@ -19,14 +19,20 @@
 пересоздаётся при апгрейде). `config.Server.Type` - точка ветвления
 (`"" | "imap"`; прочее отвергается).
 
-Осталось (реализация транспортов):
+**Maildir** - `endpoint/maildir.go` готов: `type: maildir`, `root` - шаблон пути
+с `%u`/`%n`/`%d`; ID = unique-часть имени файла (стабильна при смене флагов /
+new↔cur); validity - константа (расхождения самолечит diff); `Append` пишет
+`tmp/` → `new/` (без флагов) или `cur/…:2,FRS` (с флагами), `INTERNALDATE` через
+mtime; SPECIAL-USE токены → `.Sent`/`.Drafts`/…; подпапки создаются при Select.
+Тесты: unit + Maildir↔Maildir + IMAP↔Maildir (полный и инкрементальный синк).
 
-- **Maildir** - `endpoint/maildir.go`: ID = имя файла, validity = что-то от
-  каталога; `Append` = запись MIME-файла в `new/` → `cur/`; флаги - в имени файла.
+Осталось:
+
 - **EWS** - `endpoint/ews.go`: ID = `ItemId`, validity = константа или SyncState;
   проверить добавление `X-Imapsync-Hash` через `CreateItem` c MIME.
-- Валидация конфига для не-IMAP типов (сейчас `validateServer` требует
-  host/master_*).
+- Maildir: не читает `subscriptions` / не поддерживает `:1,` info-суффикс и
+  `;2,` (не-Linux разделитель); `Open` читает файл целиком (для локального диска
+  ок). `dovecot-uidvalidity` не используется.
 
 ### A2. REST-API для управления (идея, оценка)
 

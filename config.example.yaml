@@ -2,7 +2,7 @@
 # Имперсонация: SASL PLAIN с authzid (authcid = master_user, authzid = user_a/user_b).
 
 server_a:
-  type: imap              # пока поддерживается только imap (задел под maildir/ews)
+  type: imap              # imap (по умолчанию) | maildir
   host: mail-a.corp.ru
   port: 993
   master_user: svc_sync
@@ -14,6 +14,11 @@ server_b:
   port: 993
   master_user: svc_sync
   master_pass: "SECRET_B"
+
+# Пример конца типа maildir (тип задаётся на каждой стороне независимо):
+# server_a:
+#   type: maildir
+#   root: /var/vmail/%d/%n/Maildir   # %u - весь user_a/user_b, %n - до @, %d - домен
 
 # Источник списков folders/users: "yaml" (по умолчанию) или "sqlite".
 # При "sqlite" секции folders/users ниже необязательны и игнорируются,
