@@ -69,9 +69,13 @@ imapsync/
   config/
     config.go               — YAML-конфиг: серверы, юзеры, папки, worker/тайминги
   internal/
+    endpoint/
+      endpoint.go            — интерфейсы Backend/Endpoint (абстракция «конец
+                              синхронизации»); синкер знает только о них
+      imap.go                — IMAP-реализация поверх mailbox (Maildir/EWS - потом)
     mailbox/
-      client.go             — обёртка над go-imap v1: connect+TLS, master-login
-                              (имперсонация), выбор папки, list, fetch, append
+      client.go             — IMAP-примитивы поверх go-imap v1: connect+TLS,
+                              master-login (имперсонация), resolve/select/fetch/append
       message.go            — разбор письма: извлечение Message-ID, Date, Subject,
                               вычисление суррогатного хеша, чтение/запись
                               X-Imapsync-Hash

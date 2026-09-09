@@ -19,14 +19,14 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 
 	now := time.Unix(1_700_000_000, 0)
 	in := []CachedMsg{
-		{Uid: 10, MsgID: "a@c", Surrogate: "h1", InternalDate: now, Flags: []string{`\Seen`}},
-		{Uid: 11, MsgID: "", XHash: "h2", Surrogate: "h2", InternalDate: now},
+		{ID: "10", MsgID: "a@c", Surrogate: "h1", InternalDate: now, Flags: []string{`\Seen`}},
+		{ID: "11", MsgID: "", XHash: "h2", Surrogate: "h2", InternalDate: now},
 	}
 	if err := st.PutCachedMsgs(user, pair, side, in); err != nil {
 		t.Fatal(err)
 	}
 	resync := time.Unix(1_700_000_500, 0)
-	if err := st.SaveEndpoint(user, pair, side, 42, resync); err != nil {
+	if err := st.SaveEndpoint(user, pair, side, "42", resync); err != nil {
 		t.Fatal(err)
 	}
 
@@ -34,25 +34,25 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ep.Exists || ep.UIDValidity != 42 || len(msgs) != 2 {
+	if !ep.Exists || ep.Validity != "42" || len(msgs) != 2 {
 		t.Fatalf("после записи: %+v msgs=%d", ep, len(msgs))
 	}
 	if !ep.FullResyncAt.Equal(resync) {
 		t.Errorf("full_resync_at: %v != %v", ep.FullResyncAt, resync)
 	}
-	if got := msgs[10]; got.MsgID != "a@c" || len(got.Flags) != 1 || got.Flags[0] != `\Seen` {
-		t.Errorf("uid 10: %+v", got)
+	if got := msgs["10"]; got.MsgID != "a@c" || len(got.Flags) != 1 || got.Flags[0] != `\Seen` {
+		t.Errorf("msg 10: %+v", got)
 	}
-	if !msgs[10].InternalDate.Equal(now) {
-		t.Errorf("uid 10 дата: %v != %v", msgs[10].InternalDate, now)
+	if !msgs["10"].InternalDate.Equal(now) {
+		t.Errorf("msg 10 дата: %v != %v", msgs["10"].InternalDate, now)
 	}
 
 	// удаление
-	if err := st.DeleteCachedMsgs(user, pair, side, []uint32{10}); err != nil {
+	if err := st.DeleteCachedMsgs(user, pair, side, []string{"10"}); err != nil {
 		t.Fatal(err)
 	}
 	_, msgs, _ = st.LoadEndpoint(user, pair, side)
-	if len(msgs) != 1 || msgs[11].XHash != "h2" {
+	if len(msgs) != 1 || msgs["11"].XHash != "h2" {
 		t.Fatalf("после удаления: %+v", msgs)
 	}
 
@@ -69,12 +69,12 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 func TestUpsertCachedMsgUpdatesRow(t *testing.T) {
 	st := openTemp(t)
 	const user, pair, side = "u", "p", "b"
-	_ = st.PutCachedMsgs(user, pair, side, []CachedMsg{{Uid: 1, MsgID: "old", Surrogate: "s"}})
-	_ = st.PutCachedMsgs(user, pair, side, []CachedMsg{{Uid: 1, MsgID: "new", Surrogate: "s"}})
-	_ = st.SaveEndpoint(user, pair, side, 1, time.Time{})
+	_ = st.PutCachedMsgs(user, pair, side, []CachedMsg{{ID: "1", MsgID: "old", Surrogate: "s"}})
+	_ = st.PutCachedMsgs(user, pair, side, []CachedMsg{{ID: "1", MsgID: "new", Surrogate: "s"}})
+	_ = st.SaveEndpoint(user, pair, side, "1", time.Time{})
 
 	_, msgs, _ := st.LoadEndpoint(user, pair, side)
-	if len(msgs) != 1 || msgs[1].MsgID != "new" {
+	if len(msgs) != 1 || msgs["1"].MsgID != "new" {
 		t.Fatalf("upsert не обновил: %+v", msgs)
 	}
 }
@@ -167,8 +167,8 @@ func TestDeleteAndForget(t *testing.T) {
 	st := openTemp(t)
 	_ = st.UpsertUser(config.User{Name: "u1", UserA: "a", UserB: "b"}, true)
 	_ = st.UpsertFolderPair(config.FolderPair{A: "Sent", B: "S"})
-	_ = st.PutCachedMsgs("u1", "Sent\x00S", "a", []CachedMsg{{Uid: 1, Surrogate: "x"}})
-	_ = st.SaveEndpoint("u1", "Sent\x00S", "a", 1, time.Time{})
+	_ = st.PutCachedMsgs("u1", "Sent\x00S", "a", []CachedMsg{{ID: "1", Surrogate: "x"}})
+	_ = st.SaveEndpoint("u1", "Sent\x00S", "a", "1", time.Time{})
 	_ = st.RecordRun("u1", RunResult{At: time.Unix(1, 0), Status: "ok"})
 
 	if err := st.ForgetUser("u1"); err != nil {

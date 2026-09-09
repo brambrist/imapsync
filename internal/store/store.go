@@ -64,6 +64,11 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(poolSize)
 	db.SetMaxIdleConns(poolSize)
 	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	if err := migrateState(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("миграция sqlite %s: %w", path, err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("создание схемы sqlite %s: %w", path, err)
@@ -73,6 +78,27 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("создание схемы кэша состояния sqlite %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
+}
+
+// migrateState приводит state-таблицы кэша к schemaVersion. Кэш (sync_endpoint /
+// sync_msg_cache) при несовпадении версии пересоздаётся - это допустимо, полный
+// пере-скан его восстановит. user_status / user_run не трогаем.
+func migrateState(db *sql.DB) error {
+	var uv int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&uv); err != nil {
+		return err
+	}
+	if uv >= schemaVersion {
+		return nil
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS sync_endpoint; DROP TABLE IF EXISTS sync_msg_cache;`); err != nil {
+		return err
+	}
+	// PRAGMA не принимает плейсхолдеры.
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Close закрывает БД и снимает advisory-блокировку, если она бралась.

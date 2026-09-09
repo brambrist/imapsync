@@ -6,32 +6,32 @@ import (
 	"fmt"
 	"time"
 
+	"imapsync/internal/endpoint"
 	"imapsync/internal/mailbox"
 )
 
-// Entry - письмо в индексе папки: метаданные для последующего FETCH тела и
-// APPEND на другую сторону, плюс ключи сопоставления.
+// Entry - письмо в индексе папки: метаданные для последующего Open тела и
+// Append на другую сторону, плюс ключи сопоставления.
 type Entry struct {
-	Uid          uint32
+	ID           string // непрозрачный ID письма на своей стороне
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
-	Fields       mailbox.Fields // может быть нулевым, если письмо поднято из кэша
-	MsgID        string         // нормализованный Message-ID ("" если отсутствует)
-	Surrogate    string         // суррогатный хеш (для записи в X-Imapsync-Hash при копировании)
-	Keys         []string       // все ключи сопоставления (см. mailbox.MatchKeys)
+	MsgID        string   // нормализованный Message-ID ("" если отсутствует)
+	Surrogate    string   // суррогатный хеш (для записи в X-Imapsync-Hash при копировании)
+	Keys         []string // все ключи сопоставления (см. mailbox.MatchKeys)
 }
 
 // Input - разобранное письмо для BuildFrom: подходит как для свежего FETCH, так
 // и для строки кэша состояния.
 type Input struct {
-	Uid          uint32
+	ID           string
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
-	Fields       mailbox.Fields
-	MsgID        string
-	Surrogate    string
+	MsgID        string // нормализованный Message-ID
+	XHash        string // значение X-Imapsync-Hash, если письмо помечалось нами
+	Surrogate    string // вычисленный суррогатный хеш
 	Keys         []string
 }
 
@@ -58,31 +58,44 @@ func (idx *Index) has(keys []string) bool {
 	return false
 }
 
-// Build создаёт индекс из писем, полученных mailbox.Client.FetchHeaders:
-// разбирает заголовки и делегирует в BuildFrom.
-// hashHeader - имя заголовка с суррогатным хешем (из конфига).
-func Build(msgs []mailbox.FetchedMessage, hashHeader string) (*Index, []error) {
+// Build создаёт индекс из метаданных писем: разбирает заголовки и делегирует в
+// BuildFrom. hashHeader - имя заголовка с суррогатным хешем (из конфига).
+func Build(msgs []endpoint.Message, hashHeader string) (*Index, []error) {
 	inputs := make([]Input, 0, len(msgs))
 	var errs []error
 	for _, m := range msgs {
-		f, err := mailbox.ParseFields(m.Header, hashHeader)
+		in, err := ParseMessage(m, hashHeader)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("письмо uid=%d: %w", m.Uid, err))
+			errs = append(errs, err)
 			continue
 		}
-		sur := mailbox.SurrogateHash(f)
-		inputs = append(inputs, Input{
-			Uid:          m.Uid,
-			Flags:        m.Flags,
-			InternalDate: m.InternalDate,
-			Size:         m.Size,
-			Fields:       f,
-			MsgID:        f.MessageID,
-			Surrogate:    sur,
-			Keys:         mailbox.MatchKeysFrom(f.MessageID, f.HashHdr, sur),
-		})
+		inputs = append(inputs, in)
 	}
 	return BuildFrom(inputs), errs
+}
+
+// ParseMessage разбирает заголовки одного письма в Input.
+func ParseMessage(m endpoint.Message, hashHeader string) (Input, error) {
+	f, err := mailbox.ParseFields(m.Header, hashHeader)
+	if err != nil {
+		return Input{}, fmt.Errorf("письмо id=%s: %w", m.ID, err)
+	}
+	sur := mailbox.SurrogateHash(f)
+	return Input{
+		ID:           m.ID,
+		Flags:        m.Flags,
+		InternalDate: m.InternalDate,
+		Size:         m.Size,
+		MsgID:        f.MessageID,
+		XHash:        f.HashHdr,
+		Surrogate:    sur,
+		Keys:         mailbox.MatchKeysFrom(f.MessageID, f.HashHdr, sur),
+	}, nil
+}
+
+// Keys восстанавливает ключи сопоставления из компонентов (для строки кэша).
+func Keys(msgID, xhash, surrogate string) []string {
+	return mailbox.MatchKeysFrom(msgID, xhash, surrogate)
 }
 
 // BuildFrom строит индекс из уже разобранных писем. Ключи в Input.Keys должны
@@ -95,11 +108,10 @@ func BuildFrom(inputs []Input) *Index {
 			continue
 		}
 		e := &Entry{
-			Uid:          in.Uid,
+			ID:           in.ID,
 			Flags:        in.Flags,
 			InternalDate: in.InternalDate,
 			Size:         in.Size,
-			Fields:       in.Fields,
 			MsgID:        in.MsgID,
 			Surrogate:    in.Surrogate,
 			Keys:         in.Keys,

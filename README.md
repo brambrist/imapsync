@@ -272,14 +272,19 @@ case — один полный пере-фетч. Если сервер подд
 cmd/imapsync/        точка входа: диспетчер подкоманд, демон, сигналы
 config/              YAML-конфиг: загрузка, валидация, дефолты
 internal/
-  mailbox/           обёртка над go-imap: connect+TLS (ctx-aware), master-login,
-                     resolve-folder, fetch/UID SEARCH, append литералом; хеши
+  endpoint/          абстракция «конец синхронизации» (Backend/Endpoint);
+                     imap.go - реализация поверх mailbox (Maildir/EWS - потом)
+  mailbox/           IMAP-примитивы поверх go-imap: connect+TLS (ctx-aware),
+                     master-login, resolve-folder, fetch/UID SEARCH, append; хеши
   dedup/             мультиключевой индекс папки, вычисление дельты
   stats/             потокобезопасные счётчики, периодический вывод
   syncer/            синк одного юзера (полная и инкрементальная сверка) + пул
   store/             локальная БД SQLite: конфигурация, кэш состояния,
                      статус синка по юзерам
 ```
+
+Синкер не знает про IMAP - только про `endpoint.Endpoint`. Добавление Maildir /
+EWS = новый файл в `internal/endpoint` + ветка в `config.Server.Type`.
 
 ## Тесты
 

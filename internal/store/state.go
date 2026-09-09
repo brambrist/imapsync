@@ -13,12 +13,17 @@ import (
 // конфигурационные таблицы.
 //
 // pair - строковый ключ пары папок ("<folder_a>\x00<folder_b>"), side - 'a'|'b'.
+// schemaVersion - при росте state-таблицы кэша (sync_endpoint/sync_msg_cache)
+// пересоздаются (это чистый кэш, пере-скан всё восстановит). user_status /
+// user_run сохраняются.
+const schemaVersion = 2
+
 const stateSchema = `
 CREATE TABLE IF NOT EXISTS sync_endpoint (
     user_name      TEXT NOT NULL,
     pair           TEXT NOT NULL,
     side           TEXT NOT NULL,
-    uidvalidity    INTEGER NOT NULL,
+    validity       TEXT NOT NULL,
     full_resync_at INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL,
     PRIMARY KEY (user_name, pair, side)
@@ -27,13 +32,13 @@ CREATE TABLE IF NOT EXISTS sync_msg_cache (
     user_name    TEXT NOT NULL,
     pair         TEXT NOT NULL,
     side         TEXT NOT NULL,
-    uid          INTEGER NOT NULL,
+    msg_id       TEXT NOT NULL,
     msgid        TEXT NOT NULL,
     xhash        TEXT NOT NULL,
     surrogate    TEXT NOT NULL,
     internaldate INTEGER NOT NULL,
     flags        TEXT NOT NULL,
-    PRIMARY KEY (user_name, pair, side, uid)
+    PRIMARY KEY (user_name, pair, side, msg_id)
 );
 CREATE TABLE IF NOT EXISTS user_status (
     user_name    TEXT PRIMARY KEY,
@@ -68,14 +73,14 @@ const userRunKeep = 200
 // Endpoint - сохранённое состояние одной стороны пары папок.
 type Endpoint struct {
 	Exists       bool
-	UIDValidity  uint32
+	Validity     string    // токен валидности (IMAP UIDVALIDITY и т.п.)
 	FullResyncAt time.Time // время последнего полного пере-скана; нулевое = не было
 }
 
 // CachedMsg - разобранное письмо в кэше состояния (без сырых заголовков и тела).
 type CachedMsg struct {
-	Uid          uint32
-	MsgID        string
+	ID           string // непрозрачный ID письма на своей стороне
+	MsgID        string // нормализованный Message-ID
 	XHash        string
 	Surrogate    string
 	InternalDate time.Time
@@ -93,14 +98,14 @@ func decodeFlags(s string) []string {
 
 // LoadEndpoint возвращает сохранённое состояние эндпоинта и карту uid->письмо.
 // Если эндпоинт ещё не сохранялся - Endpoint{Exists:false} и пустая карта.
-func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[uint32]CachedMsg, error) {
+func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[string]CachedMsg, error) {
 	var ep Endpoint
 	var resyncAt int64
 	err := s.db.QueryRow(
-		`SELECT uidvalidity, full_resync_at FROM sync_endpoint WHERE user_name=? AND pair=? AND side=?`,
-		user, pair, side).Scan(&ep.UIDValidity, &resyncAt)
+		`SELECT validity, full_resync_at FROM sync_endpoint WHERE user_name=? AND pair=? AND side=?`,
+		user, pair, side).Scan(&ep.Validity, &resyncAt)
 	if err == sql.ErrNoRows {
-		return Endpoint{}, map[uint32]CachedMsg{}, nil
+		return Endpoint{}, map[string]CachedMsg{}, nil
 	}
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("чтение sync_endpoint (%s/%s/%s): %w", user, pair, side, err)
@@ -111,41 +116,41 @@ func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[uint32]Cach
 	}
 
 	rows, err := s.db.Query(
-		`SELECT uid, msgid, xhash, surrogate, internaldate, flags FROM sync_msg_cache
+		`SELECT msg_id, msgid, xhash, surrogate, internaldate, flags FROM sync_msg_cache
 		 WHERE user_name=? AND pair=? AND side=?`, user, pair, side)
 	if err != nil {
 		return Endpoint{}, nil, fmt.Errorf("чтение sync_msg_cache (%s/%s/%s): %w", user, pair, side, err)
 	}
 	defer rows.Close()
 
-	msgs := make(map[uint32]CachedMsg)
+	msgs := make(map[string]CachedMsg)
 	for rows.Next() {
 		var m CachedMsg
 		var idate int64
 		var flags string
-		if err := rows.Scan(&m.Uid, &m.MsgID, &m.XHash, &m.Surrogate, &idate, &flags); err != nil {
+		if err := rows.Scan(&m.ID, &m.MsgID, &m.XHash, &m.Surrogate, &idate, &flags); err != nil {
 			return Endpoint{}, nil, fmt.Errorf("разбор строки sync_msg_cache: %w", err)
 		}
 		m.InternalDate = time.Unix(idate, 0)
 		m.Flags = decodeFlags(flags)
-		msgs[m.Uid] = m
+		msgs[m.ID] = m
 	}
 	return ep, msgs, rows.Err()
 }
 
-// SaveEndpoint фиксирует UIDVALIDITY и время последнего полного пере-скана.
+// SaveEndpoint фиксирует токен валидности и время последнего полного пере-скана.
 // Нулевой fullResyncAt означает «пере-скан не делался» и записывается как 0.
-func (s *Store) SaveEndpoint(user, pair, side string, uidvalidity uint32, fullResyncAt time.Time) error {
+func (s *Store) SaveEndpoint(user, pair, side, validity string, fullResyncAt time.Time) error {
 	var resyncAt int64
 	if !fullResyncAt.IsZero() {
 		resyncAt = fullResyncAt.UnixNano()
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO sync_endpoint (user_name, pair, side, uidvalidity, full_resync_at, updated_at)
+		INSERT INTO sync_endpoint (user_name, pair, side, validity, full_resync_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_name, pair, side) DO UPDATE SET
-			uidvalidity=excluded.uidvalidity, full_resync_at=excluded.full_resync_at, updated_at=excluded.updated_at`,
-		user, pair, side, uidvalidity, resyncAt, time.Now().Unix())
+			validity=excluded.validity, full_resync_at=excluded.full_resync_at, updated_at=excluded.updated_at`,
+		user, pair, side, validity, resyncAt, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("запись sync_endpoint (%s/%s/%s): %w", user, pair, side, err)
 	}
@@ -164,9 +169,9 @@ func (s *Store) PutCachedMsgs(user, pair, side string, msgs []CachedMsg) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO sync_msg_cache (user_name, pair, side, uid, msgid, xhash, surrogate, internaldate, flags)
+		INSERT INTO sync_msg_cache (user_name, pair, side, msg_id, msgid, xhash, surrogate, internaldate, flags)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(user_name, pair, side, uid) DO UPDATE SET
+		ON CONFLICT(user_name, pair, side, msg_id) DO UPDATE SET
 			msgid=excluded.msgid, xhash=excluded.xhash, surrogate=excluded.surrogate,
 			internaldate=excluded.internaldate, flags=excluded.flags`)
 	if err != nil {
@@ -175,9 +180,9 @@ func (s *Store) PutCachedMsgs(user, pair, side string, msgs []CachedMsg) error {
 	defer stmt.Close()
 
 	for _, m := range msgs {
-		if _, err := stmt.Exec(user, pair, side, m.Uid, m.MsgID, m.XHash, m.Surrogate,
+		if _, err := stmt.Exec(user, pair, side, m.ID, m.MsgID, m.XHash, m.Surrogate,
 			m.InternalDate.Unix(), encodeFlags(m.Flags)); err != nil {
-			return fmt.Errorf("вставка письма uid=%d в кэш: %w", m.Uid, err)
+			return fmt.Errorf("вставка письма id=%s в кэш: %w", m.ID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -186,22 +191,22 @@ func (s *Store) PutCachedMsgs(user, pair, side string, msgs []CachedMsg) error {
 	return nil
 }
 
-// DeleteCachedMsgs убирает из кэша письма с указанными UID (например удалённые на
+// DeleteCachedMsgs убирает из кэша письма с указанными ID (например удалённые на
 // сервере).
-func (s *Store) DeleteCachedMsgs(user, pair, side string, uids []uint32) error {
+func (s *Store) DeleteCachedMsgs(user, pair, side string, ids []string) error {
 	const chunk = 400
-	for start := 0; start < len(uids); start += chunk {
-		end := min(start+chunk, len(uids))
-		batch := uids[start:end]
+	for start := 0; start < len(ids); start += chunk {
+		end := min(start+chunk, len(ids))
+		batch := ids[start:end]
 
 		ph := strings.Repeat(",?", len(batch))[1:]
 		args := make([]any, 0, len(batch)+3)
 		args = append(args, user, pair, side)
-		for _, u := range batch {
-			args = append(args, u)
+		for _, id := range batch {
+			args = append(args, id)
 		}
 		q := fmt.Sprintf(
-			`DELETE FROM sync_msg_cache WHERE user_name=? AND pair=? AND side=? AND uid IN (%s)`, ph)
+			`DELETE FROM sync_msg_cache WHERE user_name=? AND pair=? AND side=? AND msg_id IN (%s)`, ph)
 		if _, err := s.db.Exec(q, args...); err != nil {
 			return fmt.Errorf("удаление писем из кэша (%s/%s/%s): %w", user, pair, side, err)
 		}

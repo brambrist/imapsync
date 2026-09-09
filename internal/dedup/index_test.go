@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"imapsync/internal/mailbox"
+	"imapsync/internal/endpoint"
 )
 
 const hashHdr = "X-Imapsync-Hash"
@@ -20,8 +20,8 @@ func hdr(kv ...string) []byte {
 	return []byte(b.String())
 }
 
-func msg(uid uint32, raw []byte) mailbox.FetchedMessage {
-	return mailbox.FetchedMessage{Uid: uid, Header: raw}
+func msg(id string, raw []byte) endpoint.Message {
+	return endpoint.Message{ID: id, Header: raw}
 }
 
 func TestDeltaBasic(t *testing.T) {
@@ -29,21 +29,21 @@ func TestDeltaBasic(t *testing.T) {
 	m2 := hdr("Message-ID", "<2@c>", "Subject", "two", "From", "a@c", "Date", "Wed, 09 Sep 2026 12:01:00 +0000")
 	m3 := hdr("Message-ID", "<3@c>", "Subject", "three", "From", "a@c", "Date", "Wed, 09 Sep 2026 12:02:00 +0000")
 
-	a, errs := Build([]mailbox.FetchedMessage{msg(11, m1), msg(12, m2)}, hashHdr)
+	a, errs := Build([]endpoint.Message{msg("11", m1), msg("12", m2)}, hashHdr)
 	if len(errs) != 0 {
 		t.Fatalf("errs A: %v", errs)
 	}
-	b, errs := Build([]mailbox.FetchedMessage{msg(22, m2), msg(23, m3)}, hashHdr)
+	b, errs := Build([]endpoint.Message{msg("22", m2), msg("23", m3)}, hashHdr)
 	if len(errs) != 0 {
 		t.Fatalf("errs B: %v", errs)
 	}
 
 	onB, onA := Delta(a, b)
-	if len(onB) != 1 || onB[0].Uid != 11 {
-		t.Errorf("missingOnB = %+v, ожидали uid=11", onB)
+	if len(onB) != 1 || onB[0].ID != "11" {
+		t.Errorf("missingOnB = %+v, ожидали id=11", onB)
 	}
-	if len(onA) != 1 || onA[0].Uid != 23 {
-		t.Errorf("missingOnA = %+v, ожидали uid=23", onA)
+	if len(onA) != 1 || onA[0].ID != "23" {
+		t.Errorf("missingOnA = %+v, ожидали id=23", onA)
 	}
 }
 
@@ -54,13 +54,13 @@ func TestLateMessageIDNoDuplicate(t *testing.T) {
 
 	// сторона A: письмо уже обзавелось Message-ID
 	aRaw := hdr("Message-ID", "<late@c>", "Subject", subj, "From", from, "Date", date)
-	aIdx, _ := Build([]mailbox.FetchedMessage{msg(1, aRaw)}, hashHdr)
+	aIdx, _ := Build([]endpoint.Message{msg("1", aRaw)}, hashHdr)
 
 	// суррогат, который мы записали в копию на B при прошлом проходе
-	sur := mailbox.SurrogateHash(aIdx.entries[0].Fields)
+	sur := aIdx.entries[0].Surrogate
 
 	bRaw := hdr("Subject", subj, "From", from, "Date", date, hashHdr, sur)
-	bIdx, _ := Build([]mailbox.FetchedMessage{msg(2, bRaw)}, hashHdr)
+	bIdx, _ := Build([]endpoint.Message{msg("2", bRaw)}, hashHdr)
 
 	onB, onA := Delta(aIdx, bIdx)
 	if len(onB) != 0 {
@@ -73,7 +73,7 @@ func TestLateMessageIDNoDuplicate(t *testing.T) {
 
 func TestInternalDupsCounted(t *testing.T) {
 	m := hdr("Message-ID", "<x@c>", "Subject", "s", "From", "a@c", "Date", "Wed, 09 Sep 2026 12:00:00 +0000")
-	idx, _ := Build([]mailbox.FetchedMessage{msg(1, m), msg(2, m), msg(3, m)}, hashHdr)
+	idx, _ := Build([]endpoint.Message{msg("1", m), msg("2", m), msg("3", m)}, hashHdr)
 	if idx.Len() != 1 {
 		t.Errorf("Len = %d, ожидали 1", idx.Len())
 	}
@@ -85,8 +85,8 @@ func TestInternalDupsCounted(t *testing.T) {
 func TestNoMessageIDMatchesBySurrogate(t *testing.T) {
 	subj, from, date := "no id here", "x@c", "Wed, 09 Sep 2026 12:00:00 +0000"
 	raw := hdr("Subject", subj, "From", from, "Date", date)
-	a, _ := Build([]mailbox.FetchedMessage{msg(1, raw)}, hashHdr)
-	b, _ := Build([]mailbox.FetchedMessage{msg(2, raw)}, hashHdr)
+	a, _ := Build([]endpoint.Message{msg("1", raw)}, hashHdr)
+	b, _ := Build([]endpoint.Message{msg("2", raw)}, hashHdr)
 	onB, onA := Delta(a, b)
 	if len(onB) != 0 || len(onA) != 0 {
 		t.Errorf("письма без Message-ID не сматчились по суррогату: onB=%v onA=%v", onB, onA)

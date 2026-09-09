@@ -2,12 +2,14 @@
 # Имперсонация: SASL PLAIN с authzid (authcid = master_user, authzid = user_a/user_b).
 
 server_a:
+  type: imap              # пока поддерживается только imap (задел под maildir/ews)
   host: mail-a.corp.ru
   port: 993
   master_user: svc_sync
   master_pass: "SECRET_A"
 
 server_b:
+  type: imap
   host: mail-b.corp.ru
   port: 993
   master_user: svc_sync

@@ -313,29 +313,6 @@ func (cl *Client) FetchFullLiteral(uid uint32) (imap.Literal, error) {
 	return lit, nil
 }
 
-// prefixedLiteral - imap.Literal из "префикс + тело" без копирования тела.
-type prefixedLiteral struct {
-	r      io.Reader
-	length int
-}
-
-func (p *prefixedLiteral) Read(b []byte) (int, error) { return p.r.Read(b) }
-func (p *prefixedLiteral) Len() int                   { return p.length }
-
-// WithHashHeader возвращает литерал письма с добавленным в начало заголовком
-// hashHeader: value (без копирования тела). Если заголовок уже есть - литерал
-// возвращается как есть.
-func WithHashHeader(body imap.Literal, hashHeader, value string) imap.Literal {
-	if buf, ok := body.(*bytes.Buffer); ok && HasHeader(buf.Bytes(), hashHeader) {
-		return body
-	}
-	hdr := fmt.Appendf(nil, "%s: %s\r\n", hashHeader, value)
-	return &prefixedLiteral{
-		r:      io.MultiReader(bytes.NewReader(hdr), body),
-		length: len(hdr) + body.Len(),
-	}
-}
-
 // Append дописывает письмо в папку, сохраняя флаги и внутреннюю дату оригинала.
 func (cl *Client) Append(folder string, flags []string, date time.Time, body []byte) error {
 	_, err := cl.AppendLiteral(folder, flags, date, bytes.NewBuffer(body))

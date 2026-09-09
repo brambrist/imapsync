@@ -32,11 +32,18 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 // Std возвращает значение как стандартный time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
-// Server описывает один IMAP-сервер и мастер-доступ к нему.
+// Типы транспорта для конца синхронизации.
+const (
+	EndpointIMAP = "imap" // единственный поддерживаемый сейчас
+)
+
+// Server описывает один конец синхронизации. Сейчас это всегда IMAP-сервер с
+// мастер-доступом; поле Type - точка расширения под Maildir / EWS и т.п.
 //
-// Имперсонация выполняется через SASL PLAIN с authzid: authcid и пароль -
+// Имперсонация (IMAP) выполняется через SASL PLAIN с authzid: authcid и пароль -
 // мастер-учётки, authzid - целевой пользователь (user_a / user_b).
 type Server struct {
+	Type       string `yaml:"type"` // "" или "imap"
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
 	MasterUser string `yaml:"master_user"` // authcid для SASL PLAIN
@@ -298,6 +305,11 @@ func (c *Config) ValidateEntities() error {
 }
 
 func validateServer(name string, s Server) error {
+	switch s.Type {
+	case "", EndpointIMAP:
+	default:
+		return fmt.Errorf("%s: тип %q не поддерживается (пока только %q)", name, s.Type, EndpointIMAP)
+	}
 	if strings.TrimSpace(s.Host) == "" {
 		return fmt.Errorf("%s: не задан host", name)
 	}
