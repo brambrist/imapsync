@@ -162,7 +162,7 @@ func (sess *session) close() {
 
 // dial подключается к серверу с повторами при транзиентных ошибках.
 func (s *Syncer) dial(ctx context.Context, srv config.Server, user string) (*mailbox.Client, error) {
-	attempts := s.cfg.ConnectRetries + 1
+	attempts := max(1, s.cfg.ConnectRetries+1)
 	var lastErr error
 	for i := range attempts {
 		if i > 0 {

@@ -10,6 +10,7 @@ import (
 
 	"imapsync/config"
 	"imapsync/internal/stats"
+	"imapsync/internal/store"
 )
 
 // fakeSyncer считает вызовы и следит за максимальной параллельностью.
@@ -154,6 +155,51 @@ func TestPoolRunConvergesRealServers(t *testing.T) {
 	}
 	if rep := coll.Snapshot(); rep.Total.Errors != 0 {
 		t.Errorf("ошибок в последнем цикле: %d (%+v)", rep.Total.Errors, rep.Users)
+	}
+}
+
+func TestReloadPicksUpDBChanges(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/reload.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	_ = st.UpsertFolderPair(config.FolderPair{A: "Sent", B: "S"})
+	_ = st.UpsertUser(config.User{Name: "a", UserA: "x", UserB: "y"}, true)
+	_ = st.UpsertUser(config.User{Name: "b", UserA: "x", UserB: "y"}, true)
+
+	cfg := &config.Config{
+		Source:         config.SourceSQLite,
+		Users:          nil,
+		Workers:        1,
+		PerUserTimeout: config.Duration(time.Minute),
+		SyncInterval:   config.Duration(10 * time.Millisecond),
+	}
+	fs := newFake(time.Millisecond)
+	p, _ := newTestPool(cfg, fs)
+	p.reloadSrc = st
+
+	// первый цикл вручную
+	p.reload()
+	if len(cfg.Users) != 2 {
+		t.Fatalf("после reload юзеров %d, ожидали 2", len(cfg.Users))
+	}
+	p.RunCycle(context.Background())
+
+	// добавляем юзера в БД и выключаем одного
+	_ = st.UpsertUser(config.User{Name: "c", UserA: "x", UserB: "y"}, true)
+	_ = st.SetUserEnabled("b", false)
+
+	p.reload()
+	if len(cfg.Users) != 2 {
+		t.Fatalf("после второго reload юзеров %d (a,c), ожидали 2", len(cfg.Users))
+	}
+	names := map[string]bool{}
+	for _, u := range cfg.Users {
+		names[u.Name] = true
+	}
+	if !names["a"] || !names["c"] || names["b"] {
+		t.Errorf("состав юзеров после reload: %v", names)
 	}
 }
 

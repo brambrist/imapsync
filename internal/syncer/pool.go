@@ -23,20 +23,52 @@ type Pool struct {
 	sync  userSyncer
 	stats *stats.Collector
 	logf  stats.Logf
+
+	// reloadSrc != nil => перед каждым циклом перечитываем списки юзеров и папок
+	// из БД (актуально при source: sqlite - изменения через db-* подхватываются
+	// без рестарта демона).
+	reloadSrc *store.Store
 }
 
 // NewPool собирает пул с продакшн-синкером. Если st != nil, он передаётся
-// синкеру (инкрементальная сверка при cfg.StateCache и запись user_status).
+// синкеру (инкрементальная сверка при cfg.StateCache и запись user_status);
+// при source: sqlite он же используется для горячей перезагрузки списков.
 func NewPool(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st *store.Store) *Pool {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Pool{
+	p := &Pool{
 		cfg:   cfg,
 		sync:  NewWithState(cfg, coll, logf, st),
 		stats: coll,
 		logf:  logf,
 	}
+	if cfg.Source == config.SourceSQLite && st != nil {
+		p.reloadSrc = st
+	}
+	return p
+}
+
+// reload перечитывает списки юзеров и папок из БД (между циклами, когда воркеров
+// нет - гонки не возникает). Ошибку чтения игнорируем, оставляя прежние списки.
+func (p *Pool) reload() {
+	if p.reloadSrc == nil {
+		return
+	}
+	users, err := p.reloadSrc.ListUsers()
+	if err != nil {
+		p.logf("не удалось перечитать юзеров из БД: %v (оставляю прежний список)", err)
+		return
+	}
+	folders, err := p.reloadSrc.ListFolderPairs()
+	if err != nil {
+		p.logf("не удалось перечитать папки из БД: %v (оставляю прежний список)", err)
+		return
+	}
+	if pu, pf := len(p.cfg.Users), len(p.cfg.Folders); pu != len(users) || pf != len(folders) {
+		p.logf("списки из БД обновлены: юзеров %d->%d, пар папок %d->%d", pu, len(users), pf, len(folders))
+	}
+	p.cfg.Users, p.cfg.Folders = users, folders
 }
 
 // workers - фактическое число воркеров: не больше числа юзеров.
@@ -59,6 +91,7 @@ func (p *Pool) Run(ctx context.Context) {
 
 	for {
 		started := time.Now()
+		p.reload()
 		p.logf("цикл синхронизации начат: юзеров=%d, воркеров=%d", len(p.cfg.Users), p.workers())
 		p.RunCycle(ctx)
 		p.stats.LogSummary(p.logf)

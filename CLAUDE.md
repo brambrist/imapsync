@@ -165,6 +165,8 @@ insecure_tls: false
 CLI управления БД: `db-remove-user`/`db-remove-folder`, `db-forget-user` (сброс
 кэша+статуса+истории), `db-resume-user` (снять стоп-синк), `db-history`,
 `db-vacuum`. История прогонов - `user_run` (ретенция 200/юзера).
+При `source: sqlite` демон перечитывает списки из БД перед каждым циклом
+(`Pool.reload`) - `db-*` подхватываются без рестарта.
 
 Имена в `folders` резолвятся через `mailbox.ResolveFolder`: точное имя →
 SPECIAL-USE токен (`\Sent`) → регистронезависимо. Демон при открытой БД берёт
