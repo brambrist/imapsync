@@ -9,12 +9,12 @@ import (
 
 func TestEndpointCacheRoundTrip(t *testing.T) {
 	st := openTemp(t)
-	const user, pair, side = "ivanov", "Sent\x00Отправленные", "a"
+	const user, pair, side = "ivanov", "Sent\x00Sent Items", "a"
 
-	// первый вызов - пусто
+	// first call - empty
 	ep, msgs, err := st.LoadEndpoint(user, pair, side)
 	if err != nil || ep.Exists || len(msgs) != 0 {
-		t.Fatalf("пустой эндпоинт: %+v msgs=%d err=%v", ep, len(msgs), err)
+		t.Fatalf("empty endpoint: %+v msgs=%d err=%v", ep, len(msgs), err)
 	}
 
 	now := time.Unix(1_700_000_000, 0)
@@ -35,7 +35,7 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !ep.Exists || ep.Validity != "42" || len(msgs) != 2 {
-		t.Fatalf("после записи: %+v msgs=%d", ep, len(msgs))
+		t.Fatalf("after write: %+v msgs=%d", ep, len(msgs))
 	}
 	if !ep.FullResyncAt.Equal(resync) {
 		t.Errorf("full_resync_at: %v != %v", ep.FullResyncAt, resync)
@@ -44,16 +44,16 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 		t.Errorf("msg 10: %+v", got)
 	}
 	if !msgs["10"].InternalDate.Equal(now) {
-		t.Errorf("msg 10 дата: %v != %v", msgs["10"].InternalDate, now)
+		t.Errorf("msg 10 date: %v != %v", msgs["10"].InternalDate, now)
 	}
 
-	// удаление
+	// delete
 	if err := st.DeleteCachedMsgs(user, pair, side, []string{"10"}); err != nil {
 		t.Fatal(err)
 	}
 	_, msgs, _ = st.LoadEndpoint(user, pair, side)
 	if len(msgs) != 1 || msgs["11"].XHash != "h2" {
-		t.Fatalf("после удаления: %+v", msgs)
+		t.Fatalf("after delete: %+v", msgs)
 	}
 
 	// reset
@@ -62,7 +62,7 @@ func TestEndpointCacheRoundTrip(t *testing.T) {
 	}
 	ep, msgs, _ = st.LoadEndpoint(user, pair, side)
 	if ep.Exists || len(msgs) != 0 {
-		t.Fatalf("после reset: %+v msgs=%d", ep, len(msgs))
+		t.Fatalf("after reset: %+v msgs=%d", ep, len(msgs))
 	}
 }
 
@@ -75,7 +75,7 @@ func TestUpsertCachedMsgUpdatesRow(t *testing.T) {
 
 	_, msgs, _ := st.LoadEndpoint(user, pair, side)
 	if len(msgs) != 1 || msgs["1"].MsgID != "new" {
-		t.Fatalf("upsert не обновил: %+v", msgs)
+		t.Fatalf("upsert did not update: %+v", msgs)
 	}
 }
 
@@ -86,15 +86,15 @@ func TestOpenExclusiveBlocksSecondProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := OpenExclusive(path); err == nil {
-		t.Fatal("второй OpenExclusive должен был не пройти")
+		t.Fatal("the second OpenExclusive should have failed")
 	}
 	if err := st1.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// после закрытия - снова можно
+	// after close - possible again
 	st2, err := OpenExclusive(path)
 	if err != nil {
-		t.Fatalf("после Close блокировка не снялась: %v", err)
+		t.Fatalf("lock not released after Close: %v", err)
 	}
 	st2.Close()
 }
@@ -110,40 +110,40 @@ func TestRecordRunStreaksAndHistory(t *testing.T) {
 	}
 
 	must(st.RecordRun("u1", RunResult{At: time.Unix(1000, 0), Status: "ok", CopiedAToB: 5}))
-	must(st.RecordRun("u1", RunResult{At: time.Unix(2000, 0), Status: "error", Errors: 3, LastError: "бах-1"}))
-	must(st.RecordRun("u1", RunResult{At: time.Unix(3000, 0), Status: "error", Errors: 1, LastError: "бах-2"}))
+	must(st.RecordRun("u1", RunResult{At: time.Unix(2000, 0), Status: "error", Errors: 3, LastError: "boom-1"}))
+	must(st.RecordRun("u1", RunResult{At: time.Unix(3000, 0), Status: "error", Errors: 1, LastError: "boom-2"}))
 
 	got := mustStatus(t, st, "u1")
-	if got.Status != "error" || got.LastError != "бах-2" {
-		t.Errorf("текущий статус: %+v", got)
+	if got.Status != "error" || got.LastError != "boom-2" {
+		t.Errorf("current status: %+v", got)
 	}
 	if got.FailStreak != 2 {
-		t.Errorf("fail_streak = %d, ожидали 2", got.FailStreak)
+		t.Errorf("fail_streak = %d, expected 2", got.FailStreak)
 	}
 	if !got.FailSince.Equal(time.Unix(2000, 0)) {
-		t.Errorf("fail_since = %v, ожидали момент первой ошибки (2000)", got.FailSince)
+		t.Errorf("fail_since = %v, expected the time of the first error (2000)", got.FailSince)
 	}
 	if !got.LastOK.Equal(time.Unix(1000, 0)) {
-		t.Errorf("last_ok затёрт: %v", got.LastOK)
+		t.Errorf("last_ok overwritten: %v", got.LastOK)
 	}
 
-	// восстановление
+	// recovery
 	must(st.RecordRun("u1", RunResult{At: time.Unix(4000, 0), Status: "ok", CopiedBToA: 2}))
 	got = mustStatus(t, st, "u1")
 	if got.Status != "ok" || got.FailStreak != 0 || !got.FailSince.IsZero() {
-		t.Errorf("после восстановления: %+v", got)
+		t.Errorf("after recovery: %+v", got)
 	}
 	if !got.LastOK.Equal(time.Unix(4000, 0)) {
-		t.Errorf("last_ok не обновлён: %v", got.LastOK)
+		t.Errorf("last_ok not updated: %v", got.LastOK)
 	}
 
-	// история
+	// history
 	runs, err := st.UserRuns("u1", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(runs) != 4 || !runs[0].At.Equal(time.Unix(4000, 0)) || !runs[3].At.Equal(time.Unix(1000, 0)) {
-		t.Errorf("история: %+v", runs)
+		t.Errorf("history: %+v", runs)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestUserRunRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(runs) != userRunKeep {
-		t.Errorf("после ретенции хранится %d прогонов, ожидали %d", len(runs), userRunKeep)
+		t.Errorf("after retention %d runs kept, expected %d", len(runs), userRunKeep)
 	}
 }
 
@@ -176,30 +176,30 @@ func TestDeleteAndForget(t *testing.T) {
 	}
 	ep, msgs, _ := st.LoadEndpoint("u1", "Sent\x00S", "a")
 	if ep.Exists || len(msgs) != 0 {
-		t.Errorf("ForgetUser не очистил состояние: %+v", ep)
+		t.Errorf("ForgetUser did not clear the state: %+v", ep)
 	}
 	if runs, _ := st.UserRuns("u1", 10); len(runs) != 0 {
-		t.Errorf("ForgetUser не очистил историю: %+v", runs)
+		t.Errorf("ForgetUser did not clear the history: %+v", runs)
 	}
-	// сам юзер остался
+	// the user itself remains
 	if us, _ := st.ListUsers(); len(us) != 1 {
-		t.Errorf("ForgetUser не должен удалять из users: %+v", us)
+		t.Errorf("ForgetUser must not delete from users: %+v", us)
 	}
 
 	if err := st.DeleteUser("u1"); err != nil {
 		t.Fatal(err)
 	}
 	if us, _ := st.AllUsers(); len(us) != 0 {
-		t.Errorf("DeleteUser не сработал: %+v", us)
+		t.Errorf("DeleteUser did not work: %+v", us)
 	}
 	if err := st.DeleteFolderPair(config.FolderPair{A: "Sent", B: "S"}); err != nil {
 		t.Fatal(err)
 	}
 	if fps, _ := st.ListFolderPairs(); len(fps) != 0 {
-		t.Errorf("DeleteFolderPair не сработал: %+v", fps)
+		t.Errorf("DeleteFolderPair did not work: %+v", fps)
 	}
 	if err := st.DeleteUser("missing"); err == nil {
-		t.Error("DeleteUser несуществующего должен вернуть ошибку")
+		t.Error("DeleteUser of a missing user must return an error")
 	}
 }
 
@@ -211,7 +211,7 @@ func mustStatus(t *testing.T, st *Store, name string) UserStatus {
 	}
 	s, ok := all[name]
 	if !ok {
-		t.Fatalf("нет статуса для %q", name)
+		t.Fatalf("no status for %q", name)
 	}
 	return s
 }

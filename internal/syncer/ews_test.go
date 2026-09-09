@@ -14,11 +14,11 @@ import (
 
 func TestSyncUserEWSToMaildir(t *testing.T) {
 	ews := ewstest.New(t, map[string]string{
-		"ews-a": "Subject: с EWS\r\nFrom: a@b\r\nDate: Wed, 09 Sep 2026 12:00:00 +0000\r\n" +
-			"Message-ID: <ews-side@corp>\r\n\r\nтело",
+		"ews-a": "Subject: from EWS\r\nFrom: a@b\r\nDate: Wed, 09 Sep 2026 12:00:00 +0000\r\n" +
+			"Message-ID: <ews-side@corp>\r\n\r\nbody",
 	})
 	rootB := makeMaildir(t)
-	seedMaildir(t, rootB, "с maildir", "mdir-side@corp")
+	seedMaildir(t, rootB, "from maildir", "mdir-side@corp")
 
 	st, err := store.Open(t.TempDir() + "/state.db")
 	if err != nil {
@@ -42,27 +42,27 @@ func TestSyncUserEWSToMaildir(t *testing.T) {
 	c1.BeginCycle()
 	NewWithState(cfg, c1, t.Logf, st).SyncUser(context.Background(), usr)
 	if r := c1.Snapshot(); r.Total.CopiedAToB != 1 || r.Total.CopiedBToA != 1 || r.Total.Errors != 0 {
-		t.Fatalf("цикл 1: %+v (%+v)", r.Total, r.Users)
+		t.Fatalf("cycle 1: %+v (%+v)", r.Total, r.Users)
 	}
 	if ews.LastImp != "ivanov@corp.ru" {
-		t.Errorf("имперсонация EWS: %q", ews.LastImp)
+		t.Errorf("EWS impersonation: %q", ews.LastImp)
 	}
 
-	// на maildir теперь письмо из EWS + исходное maildir
+	// the maildir now has the EWS message + the original maildir one
 	want := []string{"ews-side@corp", "mdir-side@corp"}
 	if got := maildirMsgIDs(t, rootB); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("Maildir B = %v, ожидали %v", got, want)
+		t.Errorf("Maildir B = %v, expected %v", got, want)
 	}
-	// на EWS теперь 2 письма
+	// the EWS side now has 2 messages
 	if ews.Count() != 2 {
-		t.Errorf("на EWS %d писем, ожидали 2", ews.Count())
+		t.Errorf("EWS has %d messages, expected 2", ews.Count())
 	}
 
-	// второй цикл - идемпотентность
+	// second cycle - idempotency
 	c2 := stats.New()
 	c2.BeginCycle()
 	NewWithState(cfg, c2, t.Logf, st).SyncUser(context.Background(), usr)
 	if r := c2.Snapshot(); r.Total.CopiedAToB != 0 || r.Total.CopiedBToA != 0 {
-		t.Errorf("цикл 2 скопировал лишнее: %+v", r.Total)
+		t.Errorf("cycle 2 copied extra: %+v", r.Total)
 	}
 }

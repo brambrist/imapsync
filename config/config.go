@@ -1,5 +1,5 @@
-// Package config отвечает за загрузку, валидацию и заполнение дефолтов
-// YAML-конфига синхронизатора.
+// Package config loads, validates and applies defaults to the synchronizer's
+// YAML config.
 package config
 
 import (
@@ -11,124 +11,124 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Duration - обёртка над time.Duration, умеющая читаться из YAML как строка
-// вида "5m", "30s", "10m". Штатный yaml.v3 такой формат не разбирает.
+// Duration wraps time.Duration so it can be read from YAML as a string like
+// "5m", "30s", "10m". The stock yaml.v3 does not parse that format.
 type Duration time.Duration
 
-// UnmarshalYAML разбирает строку через time.ParseDuration.
+// UnmarshalYAML parses the string via time.ParseDuration.
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	var s string
 	if err := value.Decode(&s); err != nil {
-		return fmt.Errorf("ожидалась строка длительности (например \"5m\"): %w", err)
+		return fmt.Errorf("expected a duration string (e.g. \"5m\"): %w", err)
 	}
 	parsed, err := time.ParseDuration(strings.TrimSpace(s))
 	if err != nil {
-		return fmt.Errorf("некорректная длительность %q: %w", s, err)
+		return fmt.Errorf("invalid duration %q: %w", s, err)
 	}
 	*d = Duration(parsed)
 	return nil
 }
 
-// Std возвращает значение как стандартный time.Duration.
+// Std returns the value as a plain time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
-// Типы транспорта для конца синхронизации.
+// Transport types for a sync endpoint.
 const (
-	EndpointIMAP    = "imap"    // IMAP-сервер с мастер-доступом (по умолчанию)
-	EndpointMaildir = "maildir" // локальный Maildir/Maildir++ на диске
-	EndpointEWS     = "ews"     // Exchange Web Services (SOAP), имперсонация
+	EndpointIMAP    = "imap"    // IMAP server with master access (default)
+	EndpointMaildir = "maildir" // local Maildir/Maildir++ on disk
+	EndpointEWS     = "ews"     // Exchange Web Services (SOAP), impersonation
 )
 
-// Server описывает один конец синхронизации.
+// Server describes one sync endpoint.
 //
-//   - type: imap - Host/Port/MasterUser/MasterPass; имперсонация через SASL PLAIN
-//     с authzid (authcid+пароль - мастер, authzid - целевой юзер).
-//   - type: maildir - Root: шаблон пути к Maildir пользователя. Плейсхолдеры:
-//     %u (весь user_a/user_b), %n (локальная часть до @), %d (домен).
-//   - type: ews - EWSUrl (или Host), MasterUser/MasterPass - сервисная учётка с
-//     ролью ApplicationImpersonation; имперсонация через SOAP-заголовок
+//   - type: imap - Host/Port/MasterUser/MasterPass; impersonation via SASL PLAIN
+//     with authzid (authcid+password is the master, authzid is the target user).
+//   - type: maildir - Root: path template to the user's Maildir. Placeholders:
+//     %u (whole user_a/user_b), %n (local part before @), %d (domain).
+//   - type: ews - EWSUrl (or Host), MasterUser/MasterPass is a service account
+//     with the ApplicationImpersonation role; impersonation via the SOAP header
 //     ExchangeImpersonation (PrimarySmtpAddress = user_a/user_b). Auth: Basic.
 type Server struct {
 	Type       string `yaml:"type"` // "" | "imap" | "maildir" | "ews"
 	Host       string `yaml:"host"`
 	Port       int    `yaml:"port"`
-	MasterUser string `yaml:"master_user"` // authcid для SASL PLAIN / Basic для EWS
-	MasterPass string `yaml:"master_pass"` // пароль мастер-учётки
-	Root       string `yaml:"root"`        // шаблон пути к Maildir (type: maildir)
-	EWSUrl     string `yaml:"ews_url"`     // полный URL EWS (иначе https://<host>/EWS/Exchange.asmx)
+	MasterUser string `yaml:"master_user"` // authcid for SASL PLAIN / Basic user for EWS
+	MasterPass string `yaml:"master_pass"` // master account password
+	Root       string `yaml:"root"`        // Maildir path template (type: maildir)
+	EWSUrl     string `yaml:"ews_url"`     // full EWS URL (else https://<host>/EWS/Exchange.asmx)
 }
 
-// FolderPair - явная пара имён папок на сервере A и на сервере B.
-// Имена на разных серверах могут отличаться ("Sent" / "Отправленные").
+// FolderPair is an explicit mapping of a folder name on server A to one on
+// server B. The names may differ across servers ("Sent" / "Sent Items").
 type FolderPair struct {
 	A string `yaml:"a"`
 	B string `yaml:"b"`
 }
 
-// User - один синхронизируемый пользователь: логическое имя для логов и
-// адреса (authzid) на каждом из серверов.
+// User is one synchronized user: a logical name for logs and the addresses
+// (authzid) on each server.
 type User struct {
 	Name  string `yaml:"name"`
 	UserA string `yaml:"user_a"`
 	UserB string `yaml:"user_b"`
 }
 
-// Источники списков юзеров и папок.
+// Sources for the user and folder lists.
 const (
-	SourceYAML   = "yaml"   // users/folders берутся из этого же YAML
-	SourceSQLite = "sqlite" // users/folders берутся из локальной БД sqlite
+	SourceYAML   = "yaml"   // users/folders come from this same YAML
+	SourceSQLite = "sqlite" // users/folders come from the local sqlite DB
 )
 
-// Config - корневой конфиг.
+// Config is the root config.
 type Config struct {
 	ServerA Server `yaml:"server_a"`
 	ServerB Server `yaml:"server_b"`
 
-	// Source - откуда брать списки юзеров и пар папок: "yaml" (по умолчанию)
-	// или "sqlite". При "sqlite" секции folders/users в YAML необязательны и
-	// игнорируются, а данные читаются из файла SQLitePath.
+	// Source - where to take the user and folder-pair lists from: "yaml"
+	// (default) or "sqlite". With "sqlite" the folders/users sections in YAML
+	// are optional and ignored; data is read from the SQLitePath file.
 	Source     string `yaml:"source"`
 	SQLitePath string `yaml:"sqlite_path"`
 
-	// Folders/Users заполняются либо из YAML, либо из sqlite (см. Source).
+	// Folders/Users are populated either from YAML or from sqlite (see Source).
 	Folders []FolderPair `yaml:"folders"`
 	Users   []User       `yaml:"users"`
 
-	Workers        int      `yaml:"workers"`          // число воркеров, должно быть < числа юзеров
-	SyncInterval   Duration `yaml:"sync_interval"`    // пауза между полными циклами
-	StatsInterval  Duration `yaml:"stats_interval"`   // периодичность сводной статистики
-	PerUserTimeout Duration `yaml:"per_user_timeout"` // таймаут обработки одного юзера
-	DialTimeout    Duration `yaml:"dial_timeout"`     // таймаут установки TCP-соединения
-	IOTimeout      Duration `yaml:"io_timeout"`       // таймаут на одну IMAP-операцию (FETCH/APPEND/...)
-	FetchBatchSize int      `yaml:"fetch_batch_size"` // размер батча при FETCH
-	InsecureTLS    bool     `yaml:"insecure_tls"`     // не проверять сертификат (для тестов)
+	Workers        int      `yaml:"workers"`          // worker count, must be < number of users
+	SyncInterval   Duration `yaml:"sync_interval"`    // pause between full cycles
+	StatsInterval  Duration `yaml:"stats_interval"`   // summary stats period
+	PerUserTimeout Duration `yaml:"per_user_timeout"` // per-user processing timeout
+	DialTimeout    Duration `yaml:"dial_timeout"`     // TCP connect timeout
+	IOTimeout      Duration `yaml:"io_timeout"`       // timeout for one IMAP operation (FETCH/APPEND/...)
+	FetchBatchSize int      `yaml:"fetch_batch_size"` // FETCH batch size
+	InsecureTLS    bool     `yaml:"insecure_tls"`     // do not verify the certificate (for tests)
 
-	// ConnectRetries - сколько раз повторять подключение/переподключение к серверу
-	// при транзиентной ошибке (0 - без повторов). RetryBackoff - базовая пауза
-	// между попытками (экспоненциальный рост).
+	// ConnectRetries - how many times to retry connecting/reconnecting to a
+	// server on a transient error (0 - no retries). RetryBackoff is the base
+	// pause between attempts (grows exponentially).
 	ConnectRetries int      `yaml:"connect_retries"`
 	RetryBackoff   Duration `yaml:"retry_backoff"`
 
-	// FullResyncEvery - как часто в режиме state_cache делать полный пере-скан
-	// папки (сброс кэша эндпоинта) для отлова расхождений. 0 - никогда.
+	// FullResyncEvery - how often, in state_cache mode, to do a full folder
+	// rescan (endpoint cache reset) to catch drift. 0 - never.
 	FullResyncEvery Duration `yaml:"full_resync_every"`
 
-	// MaxFailStreak - после стольких прогонов подряд с ошибкой синк юзера
-	// останавливается (до `imapsync db-resume-user` или db-forget-user).
-	// Требует БД (state_cache или source: sqlite). Отрицательное - отключить.
+	// MaxFailStreak - after this many consecutive failed runs a user's sync is
+	// stopped (until `imapsync db-resume-user` or db-forget-user). Requires a DB
+	// (state_cache or source: sqlite). Negative - disabled.
 	MaxFailStreak int `yaml:"max_fail_streak"`
 
-	// HashHeader - имя кастомного заголовка, куда пишется суррогатный хеш
-	// при APPEND, чтобы находить уже скопированные письма на следующих проходах.
+	// HashHeader - name of the custom header the surrogate hash is written into
+	// on APPEND, so already-copied messages are found on later passes.
 	HashHeader string `yaml:"hash_header"`
 
-	// StateCache включает инкрементальную сверку: список UID берётся через
-	// UID SEARCH, заголовки фетчатся только для новых писем, разбор кэшируется в
-	// sqlite (sqlite_path). Требует заданного sqlite_path.
+	// StateCache enables incremental reconciliation: the ID list comes from
+	// UID SEARCH, headers are fetched only for new messages, and parsing is
+	// cached in sqlite (sqlite_path). Requires sqlite_path to be set.
 	StateCache bool `yaml:"state_cache"`
 }
 
-// дефолты, применяются к нулевым значениям после парсинга.
+// defaults, applied to zero values after parsing.
 const (
 	defaultPort            = 993
 	defaultWorkers         = 4
@@ -145,51 +145,51 @@ const (
 	defaultMaxFailStreak   = 10
 )
 
-// Load читает конфиг из файла, применяет дефолты и валидирует.
+// Load reads the config from a file, applies defaults and validates it.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("чтение конфига %s: %w", path, err)
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 
 	var cfg Config
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("разбор конфига %s: %w", path, err)
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 
 	cfg.applyDefaults()
 	if err := cfg.validateBase(); err != nil {
-		return nil, fmt.Errorf("валидация конфига %s: %w", path, err)
+		return nil, fmt.Errorf("validating config %s: %w", path, err)
 	}
-	// При source: yaml списки должны быть валидны уже сейчас. При source: sqlite
-	// их заполняет и проверяет вызывающий код через ValidateEntities после
-	// загрузки из БД.
+	// With source: yaml the lists must be valid already. With source: sqlite the
+	// caller populates and checks them via ValidateEntities after loading from
+	// the DB.
 	if cfg.Source == SourceYAML {
 		if err := cfg.ValidateEntities(); err != nil {
-			return nil, fmt.Errorf("валидация конфига %s: %w", path, err)
+			return nil, fmt.Errorf("validating config %s: %w", path, err)
 		}
 	}
 	return &cfg, nil
 }
 
-// LoadEntitiesOnly читает YAML и возвращает конфиг с разобранными folders/users
-// без валидации базовых полей и режима source. Нужен для команды импорта в
-// sqlite, где сам YAML может быть неполным (только списки).
+// LoadEntitiesOnly reads the YAML and returns a config with folders/users parsed
+// but without validating the base fields or the source mode. Needed for the
+// sqlite import command, where the YAML itself may be partial (lists only).
 func LoadEntitiesOnly(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("чтение конфига %s: %w", path, err)
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	var cfg Config
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("разбор конфига %s: %w", path, err)
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	if len(cfg.Folders) == 0 && len(cfg.Users) == 0 {
-		return nil, fmt.Errorf("в %s нет ни folders, ни users для импорта", path)
+		return nil, fmt.Errorf("%s has neither folders nor users to import", path)
 	}
 	return &cfg, nil
 }
@@ -242,8 +242,8 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// validateBase проверяет всё, что не зависит от источника списков: серверы,
-// тайминги, режим источника.
+// validateBase checks everything that does not depend on the list source:
+// servers, timings, source mode.
 func (c *Config) validateBase() error {
 	if err := validateServer("server_a", c.ServerA); err != nil {
 		return err
@@ -256,58 +256,58 @@ func (c *Config) validateBase() error {
 	case SourceYAML:
 	case SourceSQLite:
 		if strings.TrimSpace(c.SQLitePath) == "" {
-			return fmt.Errorf("source: sqlite - требуется sqlite_path")
+			return fmt.Errorf("source: sqlite - sqlite_path is required")
 		}
 	default:
-		return fmt.Errorf("неизвестный source %q (допустимо: %q, %q)", c.Source, SourceYAML, SourceSQLite)
+		return fmt.Errorf("unknown source %q (allowed: %q, %q)", c.Source, SourceYAML, SourceSQLite)
 	}
 
 	if c.StateCache && strings.TrimSpace(c.SQLitePath) == "" {
-		return fmt.Errorf("state_cache: true - требуется sqlite_path")
+		return fmt.Errorf("state_cache: true - sqlite_path is required")
 	}
 
 	if c.Workers < 1 {
-		return fmt.Errorf("workers должно быть >= 1, задано %d", c.Workers)
+		return fmt.Errorf("workers must be >= 1, got %d", c.Workers)
 	}
 	if c.FetchBatchSize < 1 {
-		return fmt.Errorf("fetch_batch_size должно быть >= 1, задано %d", c.FetchBatchSize)
+		return fmt.Errorf("fetch_batch_size must be >= 1, got %d", c.FetchBatchSize)
 	}
 	return nil
 }
 
-// ValidateEntities проверяет списки папок и юзеров и их согласованность с числом
-// воркеров. Вызывается из Load при source: yaml и вручную после загрузки из
-// sqlite.
+// ValidateEntities checks the folder and user lists and their consistency with
+// the worker count. Called from Load with source: yaml and manually after
+// loading from sqlite.
 func (c *Config) ValidateEntities() error {
 	if len(c.Folders) == 0 {
-		return fmt.Errorf("не задано ни одной пары папок (folders)")
+		return fmt.Errorf("no folder pairs configured (folders)")
 	}
 	for i, f := range c.Folders {
 		if strings.TrimSpace(f.A) == "" || strings.TrimSpace(f.B) == "" {
-			return fmt.Errorf("folders[%d]: пустое имя папки (a=%q b=%q)", i, f.A, f.B)
+			return fmt.Errorf("folders[%d]: empty folder name (a=%q b=%q)", i, f.A, f.B)
 		}
 	}
 
 	if len(c.Users) == 0 {
-		return fmt.Errorf("не задано ни одного пользователя (users)")
+		return fmt.Errorf("no users configured (users)")
 	}
 	seen := make(map[string]struct{}, len(c.Users))
 	for i, u := range c.Users {
 		if strings.TrimSpace(u.Name) == "" {
-			return fmt.Errorf("users[%d]: пустое поле name", i)
+			return fmt.Errorf("users[%d]: empty name field", i)
 		}
 		if strings.TrimSpace(u.UserA) == "" || strings.TrimSpace(u.UserB) == "" {
-			return fmt.Errorf("users[%d] (%s): пустой user_a или user_b", i, u.Name)
+			return fmt.Errorf("users[%d] (%s): empty user_a or user_b", i, u.Name)
 		}
 		if _, dup := seen[u.Name]; dup {
-			return fmt.Errorf("users[%d]: дублирующееся имя %q", i, u.Name)
+			return fmt.Errorf("users[%d]: duplicate name %q", i, u.Name)
 		}
 		seen[u.Name] = struct{}{}
 	}
 
-	// Требование из CLAUDE.md: воркеров меньше, чем юзеров.
+	// Requirement from CLAUDE.md: fewer workers than users.
 	if c.Workers >= len(c.Users) && len(c.Users) > 1 {
-		return fmt.Errorf("workers (%d) должно быть меньше числа юзеров (%d)", c.Workers, len(c.Users))
+		return fmt.Errorf("workers (%d) must be less than the number of users (%d)", c.Workers, len(c.Users))
 	}
 	return nil
 }
@@ -316,35 +316,35 @@ func validateServer(name string, s Server) error {
 	switch s.Type {
 	case "", EndpointIMAP:
 		if strings.TrimSpace(s.Host) == "" {
-			return fmt.Errorf("%s: не задан host", name)
+			return fmt.Errorf("%s: host is not set", name)
 		}
 		if s.Port < 1 || s.Port > 65535 {
-			return fmt.Errorf("%s: некорректный port %d", name, s.Port)
+			return fmt.Errorf("%s: invalid port %d", name, s.Port)
 		}
 		if strings.TrimSpace(s.MasterUser) == "" {
-			return fmt.Errorf("%s: не задан master_user", name)
+			return fmt.Errorf("%s: master_user is not set", name)
 		}
 		if strings.TrimSpace(s.MasterPass) == "" {
-			return fmt.Errorf("%s: не задан master_pass", name)
+			return fmt.Errorf("%s: master_pass is not set", name)
 		}
 	case EndpointMaildir:
 		if strings.TrimSpace(s.Root) == "" {
-			return fmt.Errorf("%s: type maildir - не задан root (шаблон пути к Maildir)", name)
+			return fmt.Errorf("%s: type maildir - root is not set (Maildir path template)", name)
 		}
 	case EndpointEWS:
 		if strings.TrimSpace(s.EWSUrl) == "" && strings.TrimSpace(s.Host) == "" {
-			return fmt.Errorf("%s: type ews - нужен ews_url или host", name)
+			return fmt.Errorf("%s: type ews - ews_url or host is required", name)
 		}
 		if strings.TrimSpace(s.MasterUser) == "" || strings.TrimSpace(s.MasterPass) == "" {
-			return fmt.Errorf("%s: type ews - нужны master_user/master_pass (сервисная учётка с ApplicationImpersonation)", name)
+			return fmt.Errorf("%s: type ews - master_user/master_pass are required (service account with ApplicationImpersonation)", name)
 		}
 	default:
-		return fmt.Errorf("%s: тип %q не поддерживается (%q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS)
+		return fmt.Errorf("%s: type %q is not supported (%q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS)
 	}
 	return nil
 }
 
-// Addr возвращает человекочитаемый адрес конца для логов.
+// Addr returns a human-readable endpoint address for logs.
 func (s Server) Addr() string {
 	switch s.Type {
 	case EndpointMaildir:

@@ -10,19 +10,19 @@ import (
 )
 
 func TestWithHeaderPrefixesStreaming(t *testing.T) {
-	body := "Subject: hi\r\nFrom: a@b\r\n\r\nтело письма"
+	body := "Subject: hi\r\nFrom: a@b\r\n\r\nmessage body"
 	lit := WithHeader(bytes.NewBufferString(body), "X-Imapsync-Hash", "cafe")
 
 	want := len("X-Imapsync-Hash: cafe\r\n") + len(body)
 	if lit.Len() != want {
-		t.Errorf("Len = %d, ожидали %d", lit.Len(), want)
+		t.Errorf("Len = %d, expected %d", lit.Len(), want)
 	}
 	got, _ := io.ReadAll(lit)
 	if len(got) != want {
-		t.Errorf("прочитано %d байт, Len обещал %d", len(got), want)
+		t.Errorf("read %d bytes, Len promised %d", len(got), want)
 	}
 	if !strings.HasPrefix(string(got), "X-Imapsync-Hash: cafe\r\nSubject: hi") {
-		t.Errorf("не тот префикс: %q", got[:40])
+		t.Errorf("wrong prefix: %q", got[:40])
 	}
 }
 
@@ -31,15 +31,15 @@ func TestWithHeaderIdempotent(t *testing.T) {
 	lit := WithHeader(bytes.NewBufferString(orig), "X-Imapsync-Hash", "new")
 	got, _ := io.ReadAll(lit)
 	if string(got) != orig {
-		t.Errorf("литерал с существующим заголовком изменён: %q", got)
+		t.Errorf("literal with an existing header was changed: %q", got)
 	}
 }
 
 func TestNewBackendRejectsUnknownType(t *testing.T) {
 	if _, err := NewBackend(config.Server{Type: "pop3", Host: "x"}, 0, 0, false, 10); err == nil {
-		t.Error("ожидали ошибку для неизвестного типа эндпоинта")
+		t.Error("expected an error for an unknown endpoint type")
 	}
 	if _, err := NewBackend(config.Server{Host: "x"}, 0, 0, false, 10); err != nil {
-		t.Errorf("пустой тип должен трактоваться как imap: %v", err)
+		t.Errorf("an empty type should be treated as imap: %v", err)
 	}
 }

@@ -1,193 +1,199 @@
-# Технический долг
+# Technical debt
 
-Сгруппировано по приоритету. `[РЕШЕНО]` - закрыто; остальное открыто.
+Grouped by priority. `[DONE]` - closed; everything else is open.
 
-Закрыто: A1 (IMAP + Maildir + EWS), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
+Closed: A1 (IMAP + Maildir + EWS), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
 
-Сверх списка добавлено: `max_fail_streak` - стоп-синк юзера после N ошибок
-подряд (снять: `db-resume-user`).
+Added beyond the list: `max_fail_streak` - stop a user's sync after N
+consecutive errors (lift with `db-resume-user`).
 
-## Архитектура и расширяемость
+## Architecture and extensibility
 
-### A1. [РЕШЕНО] Вариативные источники синхронизации
+### A1. [DONE] Variable synchronization sources
 
-Пакет `internal/endpoint`: `Backend` (фабрика сессий) + `Endpoint`
-(`Select` / `ListIDs` / `FetchMeta` / `Open` / `Append` / `Close`). `syncer`
-работает только через них. Реализации: `imap.go` (поверх `mailbox.Client`),
-`maildir.go`, `ews.go`. ID письма и токен валидности - строки. `config.Server.Type`
-(`"" | imap | maildir | ews`).
+Package `internal/endpoint`: `Backend` (session factory) + `Endpoint`
+(`Select` / `ListIDs` / `FetchMeta` / `Open` / `Append` / `Close`). The `syncer`
+works only through these. Implementations: `imap.go` (on top of `mailbox.Client`),
+`maildir.go`, `ews.go`. The message ID and validity token are strings.
+`config.Server.Type` (`"" | imap | maildir | ews`).
 
-EWS - что осталось доработать:
+EWS - what's left to polish:
 
-- **Auth только Basic.** O365 его отключил - нужен OAuth2 (client credentials:
-  tenant/client_id/client_secret + скоуп `full_access_as_app`). NTLM для
-  старого on-prem - транспорт `go-ntlmssp`.
-- **INTERNALDATE не переносится** - `CreateItem` с `MimeContent` ставит текущую
-  дату; нужен extended MAPI property `PR_MESSAGE_DELIVERY_TIME` (0x0E060040).
-- **Флаги** - переносится только `\Seen` (через `<t:IsRead>` рядом с MimeContent,
-  best-effort; Exchange может игнорировать). `\Answered`/`\Flagged` - нет.
-- `FindItem` без сортировки/CONDSTORE-аналога; при >1e5 писем в папке пагинация
-  по Offset может «съезжать» - для инкрементального режима это не критично
-  (ListIDs даёт полный набор).
+- **Auth is Basic only.** O365 disabled it - OAuth2 is needed (client
+  credentials: tenant/client_id/client_secret + the `full_access_as_app` scope).
+  NTLM for old on-prem - the `go-ntlmssp` transport.
+- **INTERNALDATE is not carried** - `CreateItem` with `MimeContent` sets the
+  current date; the extended MAPI property `PR_MESSAGE_DELIVERY_TIME`
+  (0x0E060040) is needed.
+- **Flags** - only `\Seen` is carried (via `<t:IsRead>` next to MimeContent,
+  best-effort; Exchange may ignore it). `\Answered`/`\Flagged` are not.
+- `FindItem` has no sorting / CONDSTORE analogue; with >1e5 messages in a folder
+  Offset paging can "slide" - not critical for the incremental mode (ListIDs
+  returns the full set).
 
-**Maildir** - `endpoint/maildir.go` готов: `type: maildir`, `root` - шаблон пути
-с `%u`/`%n`/`%d`; ID = unique-часть имени файла (стабильна при смене флагов /
-new↔cur); validity - константа (расхождения самолечит diff); `Append` пишет
-`tmp/` → `new/` (без флагов) или `cur/…:2,FRS` (с флагами), `INTERNALDATE` через
-mtime; SPECIAL-USE токены → `.Sent`/`.Drafts`/…; подпапки создаются при Select.
-Тесты: unit + Maildir↔Maildir + IMAP↔Maildir (полный и инкрементальный синк).
+**Maildir** - `endpoint/maildir.go` is done: `type: maildir`, `root` is a path
+template with `%u`/`%n`/`%d`; ID = the unique part of the filename (stable
+across flag changes / new<->cur); validity is a constant (drift is self-healed
+by the diff); `Append` writes `tmp/` -> `new/` (no flags) or `cur/...:2,FRS`
+(with flags), `INTERNALDATE` via mtime; SPECIAL-USE tokens -> `.Sent`/`.Drafts`/...;
+subfolders are created on Select. Tests: unit + Maildir<->Maildir +
+IMAP<->Maildir (full and incremental sync).
 
-Maildir - что осталось: не читает `subscriptions`; не поддерживает `:1,`
-info-суффикс и `;2,` (не-Linux разделитель); `Open` читает файл целиком (для
-локального диска ок); `dovecot-uidvalidity` не используется.
+Maildir - what's left: does not read `subscriptions`; does not support the `:1,`
+info suffix or `;2,` (the non-Linux separator); `Open` reads the whole file
+(fine for local disk); `dovecot-uidvalidity` is not used.
 
-### A2. REST-API для управления (идея, оценка)
+### A2. REST API for management (idea, assessment)
 
-Продублировать `db-*` команды по HTTP. Оценка: разумно, но не сейчас.
+Duplicate the `db-*` commands over HTTP. Assessment: reasonable, but not now.
 
-- **Предусловие [РЕШЕНО].** Пул при `source: sqlite` перечитывает списки
-  users/folders из БД перед каждым циклом (`Pool.reload`) - изменения через
-  `db-*` подхватываются без рестарта демона.
-- **Где жить.** В процессе демона (он держит `flock` на БД). Отдельный процесс
-  дрался бы за блокировку. Плюс из демона можно сразу дёргать цикл.
-- **Транспорт.** По умолчанию unix-сокет (FS-права, без сети, `curl
-  --unix-socket`). TCP - только с токеном/mTLS.
-- **Слой.** Тонкие хендлеры над существующими методами `store` (контракт уже
-  там и покрыт тестами). Без бизнес-логики в HTTP, без OpenAPI-церемоний.
-- **Охват.** ~10 эндпоинтов: users CRUD + resume/forget/runs, folders, import,
-  vacuum, status/healthz. `run` в API не входит.
-- **Альтернатива.** Если нужен только мониторинг - `/metrics` (Prometheus, L3)
-  ценнее, чем API мутаций.
-- **Оценка трудозатрат:** ~1 день (hot-reload + unix-сокет + тесты); TCP+auth
-  сверху.
+- **Prerequisite [DONE].** With `source: sqlite` the pool re-reads the
+  users/folders lists from the DB before every cycle (`Pool.reload`) - changes
+  via `db-*` are picked up without restarting the daemon.
+- **Where it lives.** Inside the daemon process (it holds the `flock` on the
+  DB). A separate process would fight for the lock. And from the daemon a cycle
+  can be triggered directly.
+- **Transport.** A unix socket by default (FS permissions, no network, `curl
+  --unix-socket`). TCP - only with a token / mTLS.
+- **Layer.** Thin handlers over the existing `store` methods (the contract is
+  already there and tested). No business logic in HTTP, no OpenAPI ceremony.
+- **Scope.** ~10 endpoints: users CRUD + resume/forget/runs, folders, import,
+  vacuum, status/healthz. `run` is not part of the API.
+- **Alternative.** If only monitoring is needed - `/metrics` (Prometheus, L3) is
+  more valuable than a mutation API.
+- **Effort estimate:** ~1 day (hot-reload + unix socket + tests); TCP+auth on
+  top.
 
-## Критично до продакшена
+## Critical before production
 
-### P1. [РЕШЕНО] `per_user_timeout` не прерывает висящий IMAP-вызов
+### P1. [DONE] `per_user_timeout` does not interrupt a hung IMAP call
 
-Добавлен `io_timeout` (дефолт 5m) - дедлайн на каждую IMAP-операцию. Кроме того
-`mailbox.Connect` берёт `ctx` и при его отмене закрывает соединение
-(`Terminate`), прерывая висящий вызов. Пул отменяет `ctx` по `per_user_timeout`
-и SIGTERM.
+Added `io_timeout` (default 5m) - a deadline for every IMAP operation. In
+addition `mailbox.Connect` takes `ctx` and closes the connection (`Terminate`)
+when it is cancelled, interrupting a hung call. The pool cancels `ctx` on
+`per_user_timeout` and SIGTERM.
 
-### P2. [РЕШЕНО] Нет фолбэка по имени папки
+### P2. [DONE] No fallback for a folder name
 
-`mailbox.ResolveFolder`: точное имя → SPECIAL-USE токен (`\Sent` и т.п.) →
-регистронезависимо; при промахе - ошибка со списком папок. Результат LIST
-кэшируется на время сессии.
+`mailbox.ResolveFolder`: exact name -> SPECIAL-USE token (`\Sent` etc.) ->
+case-insensitive; on a miss - an error listing the folders. The LIST result is
+cached for the session.
 
-### P3. Секреты только в открытом YAML
+### P3. Secrets only in plaintext YAML
 
-CLAUDE.md обещает «через переменные окружения» — не сделано. Нет `${VAR}`,
-чтения пароля из файла / секрет-менеджера. Сейчас только `chmod 600`.
+CLAUDE.md promises "via environment variables" - not done. No `${VAR}`, no
+reading a password from a file / secret manager. Only `chmod 600` for now.
 
-### P4. [РЕШЕНО] Один демон на одну БД без блокировки
+### P4. [DONE] One daemon per DB without a lock
 
-`store.OpenExclusive` берёт `flock` на `<sqlite_path>.lock`; демон использует
-его. Второй экземпляр на ту же БД падает с понятной ошибкой.
+`store.OpenExclusive` takes a `flock` on `<sqlite_path>.lock`; the daemon uses
+it. A second instance on the same DB fails with a clear error.
 
-### P5. [РЕШЕНО] Нет ретраев на транзиентных ошибках
+### P5. [DONE] No retries on transient errors
 
-`Syncer.dial` повторяет подключение (`connect_retries`, экспоненциальный
-`retry_backoff`). При обрыве посреди юзера (`isConnErr`) - переподключение и
-одна повторная попытка по текущей паре папок. `connect_retries: 0` = дефолт 3,
-отрицательное значение отключает повторы.
+`Syncer.dial` retries the connection (`connect_retries`, exponential
+`retry_backoff`). On a drop mid-user (`isConnErr`) - reconnect and one retry of
+the current folder pair. `connect_retries: 0` = default 3, a negative value
+disables retries.
 
-## Средний приоритет
+## Medium priority
 
-### M1. [РЕШЕНО] Инкрементальный режим: периодический full-resync
+### M1. [DONE] Incremental mode: periodic full resync
 
-`full_resync_every` (дефолт 24h): по истечении срока эндпоинт сбрасывается и
-папка перечитывается целиком. Время последнего пере-скана - в
+`full_resync_every` (default 24h): once the interval passes the endpoint is
+reset and the folder is re-read in full. The last-rescan time is in
 `sync_endpoint.full_resync_at`.
 
-### M2. [РЕШЕНО] Скопированное письмо кладётся в кэш сразу
+### M2. [DONE] A copied message goes into the cache immediately
 
-`mailbox.AppendGetUID` читает `[APPENDUID]` (UIDPLUS). Если сервер поддерживает -
-копия сразу попадает в кэш нужной стороны и не перечитывается в следующем цикле.
-Без UIDPLUS поведение как раньше (перечитается).
+`mailbox.AppendLiteral` reads `[APPENDUID]` (UIDPLUS). If the server supports it,
+the copy goes straight into the cache for the right side and is not re-read next
+cycle. Without UIDPLUS the behaviour is as before (re-read).
 
-### M3. [РЕШЕНО] `store` = `SetMaxOpenConns(1)`
+### M3. [DONE] `store` = `SetMaxOpenConns(1)`
 
-DSN с прагмами (`busy_timeout=10000`, `journal_mode=WAL`, `synchronous=NORMAL`,
-`foreign_keys=1`), применяемыми к каждому соединению; пул поднят до 8. Записи
-сериализуются через `busy_timeout` (ждут, а не падают), чтения идут параллельно.
+A DSN with pragmas (`busy_timeout=10000`, `journal_mode=WAL`,
+`synchronous=NORMAL`, `foreign_keys=1`) applied to every connection; the pool is
+raised to 8. Writes serialize via `busy_timeout` (wait instead of failing),
+reads go concurrently.
 
-### M4. [РЕШЕНО, частично] `copyOne` держал письмо в памяти 3 раза
+### M4. [DONE, partially] `copyOne` held the message in memory 3 times
 
-`FetchFullLiteral` отдаёт литерал из go-imap как есть; `WithHashHeader` добавляет
-кастомный заголовок потоково (`io.MultiReader`, без копии тела); `AppendLiteral`
-шлёт литерал напрямую. Было 3× размер письма транзиентно, стало 1× (+ ~40 байт).
-Полный стриминг FETCH→APPEND невозможен: go-imap v1 буферизует литерал ответа
-целиком в память (`read.go:ReadLiteral` → `make([]byte, n)`). Нужна миграция на
-v2 или форк - см. L6/A1.
+`FetchFullLiteral` returns the go-imap literal as is; `endpoint.WithHeader` adds
+the custom header in a stream (`io.MultiReader`, no body copy); `AppendLiteral`
+sends the literal directly. It was 3x the message size transiently, now 1x
+(+ ~40 bytes). Full FETCH->APPEND streaming is impossible: go-imap v1 buffers
+the response literal fully in memory (`read.go:ReadLiteral` -> `make([]byte, n)`).
+A migration to v2 or a fork is needed - see L6/A1.
 
-### M5. Коллизии суррогатного хеша
+### M5. Surrogate hash collisions
 
-Date+Subject+From: письма без `Message-ID` с одинаковыми полями (рассылки,
-автоответы) считаются дублями и не копируются. CLAUDE.md допускает расширение
-состава — не сделано.
+Date+Subject+From: messages without a `Message-ID` and with identical fields
+(mailing lists, autoreplies) are treated as duplicates and not copied. CLAUDE.md
+allows extending the composition - not done.
 
-### M6. `insecure_tls` глобальный, не per-server
+### M6. `insecure_tls` is global, not per-server
 
-Нет STARTTLS (только implicit TLS 993), клиентских сертификатов, пиннинга.
+No STARTTLS (implicit TLS 993 only), no client certs, no pinning.
 
-### M7. [РЕШЕНО] `user_status` без истории
+### M7. [DONE] `user_status` without history
 
-Таблица `user_run` - по строке на каждый прогон (ретенция: последние 200 на
-юзера). `user_status` получил `fail_since` (начало текущей серии ошибок) и
-`fail_streak`. Смотреть: `imapsync db-history -user X`; `db-list` показывает
-серию ошибок.
+The `user_run` table - one row per run (retention: last 200 per user).
+`user_status` got `fail_since` (start of the current error streak) and
+`fail_streak`. View: `imapsync db-history -user X`; `db-list` shows the streak.
 
-### M8. [РЕШЕНО] Нет команд управления БД
+### M8. [DONE] No DB management commands
 
-`db-remove-user`, `db-remove-folder`, `db-forget-user` (сброс кэша/статуса/
-истории юзера), `db-vacuum`. Ретенция `user_run` - автоматом.
-Осталось: авто-ретенции `sync_msg_cache` нет (он и так самоочищается по факту
-удаления писем на сервере).
+`db-remove-user`, `db-remove-folder`, `db-forget-user` (reset a user's
+cache/status/history), `db-vacuum`. `user_run` retention is automatic.
+Left: no auto-retention for `sync_msg_cache` (it self-cleans as messages are
+deleted on the server anyway).
 
-## Низкий приоритет
+## Low priority
 
-### L1. `idx.Dups()` не выводится
+### L1. `idx.Dups()` is not surfaced
 
-Внутренние дубли папки считаются, но не попадают ни в stats, ни в лог.
+Internal folder duplicates are counted but end up neither in stats nor in the
+log.
 
-### L2. Логи — плоский `log.Printf` в stderr
+### L2. Logs - a flat `log.Printf` to stderr
 
-Без уровней (debug/info/warn) и структурного формата. Полагаемся на journald.
+No levels (debug/info/warn) or structured format. We rely on journald.
 
-### L3. Нет метрик / healthcheck
+### L3. No metrics / healthcheck
 
-Ни Prometheus, ни HTTP-эндпоинта состояния.
+No Prometheus, no HTTP status endpoint.
 
-### L4. [РЕШЕНО] Дублируется разбор флага `-db`
+### L4. [DONE] Duplicated `-db` flag parsing
 
-Вынесен общий каркас `withStore(name, args, setup, fn)` в `cmd/imapsync/db.go`.
+Extracted the common scaffold `withStore(name, args, setup, fn)` in
+`cmd/imapsync/db.go`.
 
-### L5. `config.Duration` — только Unmarshal
+### L5. `config.Duration` - Unmarshal only
 
-Обратно конфиг не сериализуется.
+The config does not serialize back.
 
-### L6. go-imap v1 в maintenance-режиме
+### L6. go-imap v1 is in maintenance mode
 
-v2 активнее, но миграция большая (и CLAUDE.md явно требует v1).
+v2 is more active, but the migration is large (and CLAUDE.md explicitly requires
+v1).
 
-## Тесты
+## Tests
 
-### T1. Нет тестов в `cmd/imapsync`
+### T1. No tests in `cmd/imapsync`
 
-CSV-импорт, диспетчер подкоманд, `db-list` со статусом — только ручная проверка.
+CSV import, subcommand dispatch, `db-list` with status - manual checks only.
 
-### T2. Не покрыто
+### T2. Not covered
 
-Сброс по UIDVALIDITY, реальный per-user timeout, отмена посреди FETCH, коллизии
-суррогатного хеша.
+Validity-change reset, a real per-user timeout, cancellation mid-FETCH,
+surrogate hash collisions.
 
-### T3. Интеграция завязана на `go-imap/backend/memory`
+### T3. Integration is tied to `go-imap/backend/memory`
 
-Он не воспроизводит Dovecot/Exchange (SEARCH, APPENDUID, поведение флагов). Нет
-теста против реального сервера (хотя бы в docker).
+It does not reproduce Dovecot/Exchange (SEARCH, APPENDUID, flag behaviour). No
+test against a real server (even in docker).
 
-### T4. Нет бенчмарков
+### T4. No benchmarks
 
-Гипотеза «инкрементально быстрее» не измерена количественно.
+The "incremental is faster" hypothesis is not measured quantitatively.

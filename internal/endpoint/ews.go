@@ -15,9 +15,9 @@ import (
 	"imapsync/config"
 )
 
-// ewsBackend - конец типа ews (Exchange Web Services, SOAP по HTTPS).
-// Имперсонация: сервисная учётка с ролью ApplicationImpersonation + SOAP-заголовок
-// ExchangeImpersonation. Аутентификация: HTTP Basic.
+// ewsBackend - the ews endpoint type (Exchange Web Services, SOAP over HTTPS).
+// Impersonation: a service account with the ApplicationImpersonation role plus
+// the SOAP header ExchangeImpersonation. Authentication: HTTP Basic.
 type ewsBackend struct {
 	url         string
 	user        string
@@ -54,7 +54,7 @@ func (b *ewsBackend) Connect(_ context.Context, user string) (Endpoint, error) {
 	return &ewsEndpoint{cl: cl, batch: b.batch}, nil
 }
 
-// --- SOAP-клиент ---
+// --- SOAP client ---
 
 type ewsClient struct {
 	http        *http.Client
@@ -70,7 +70,7 @@ const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Body>%s</soap:Body>
 </soap:Envelope>`
 
-// call оборачивает body в SOAP-конверт (с ExchangeImpersonation) и POST-ит.
+// call wraps body in a SOAP envelope (with ExchangeImpersonation) and POSTs it.
 func (c *ewsClient) call(ctx context.Context, body string) ([]byte, error) {
 	imp := ""
 	if c.impersonate != "" {
@@ -111,7 +111,7 @@ func snippet(b []byte) string {
 	return s
 }
 
-// --- разбор ответов ---
+// --- response parsing ---
 
 type respMsg struct {
 	ResponseClass string `xml:"ResponseClass,attr"`
@@ -139,14 +139,14 @@ type itemIDAttr struct {
 type ewsEndpoint struct {
 	cl        *ewsClient
 	batch     int
-	folderXML string // <t:DistinguishedFolderId .../> или <t:FolderId .../>
+	folderXML string // <t:DistinguishedFolderId .../> or <t:FolderId .../>
 	folder    string
 }
 
 var ewsDistinguished = map[string]string{
 	"": "inbox", "inbox": "inbox",
-	"sent": "sentitems", "sent items": "sentitems", `\sent`: "sentitems", "отправленные": "sentitems",
-	"drafts": "drafts", `\drafts`: "drafts", "черновики": "drafts",
+	"sent": "sentitems", "sent items": "sentitems", `\sent`: "sentitems",
+	"drafts": "drafts", `\drafts`: "drafts",
 	"deleted items": "deleteditems", "trash": "deleteditems", `\trash`: "deleteditems",
 	"junk email": "junkemail", `\junk`: "junkemail",
 	"archive": "archive", `\archive`: "archive",
@@ -192,7 +192,7 @@ func (e *ewsEndpoint) findFolder(ctx context.Context, name string) (id, disp str
 		} `xml:"Body>FindFolderResponse>ResponseMessages>FindFolderResponseMessage"`
 	}
 	if err := xml.Unmarshal(data, &out); err != nil {
-		return "", "", fmt.Errorf("EWS FindFolder: разбор ответа: %w", err)
+		return "", "", fmt.Errorf("EWS FindFolder: parsing response: %w", err)
 	}
 	if err := out.Msg.err("FindFolder"); err != nil {
 		return "", "", err
@@ -210,7 +210,7 @@ func (e *ewsEndpoint) findFolder(ctx context.Context, name string) (id, disp str
 	if ci != "" {
 		return ci, disp, nil
 	}
-	return "", "", fmt.Errorf("EWS: папка %q не найдена", name)
+	return "", "", fmt.Errorf("EWS: folder %q not found", name)
 }
 
 func (e *ewsEndpoint) ListIDs() ([]string, error) {
@@ -239,7 +239,7 @@ func (e *ewsEndpoint) ListIDs() ([]string, error) {
 			} `xml:"Body>FindItemResponse>ResponseMessages>FindItemResponseMessage"`
 		}
 		if err := xml.Unmarshal(data, &out); err != nil {
-			return nil, fmt.Errorf("EWS FindItem: разбор ответа: %w", err)
+			return nil, fmt.Errorf("EWS FindItem: parsing response: %w", err)
 		}
 		if err := out.Msg.err("FindItem"); err != nil {
 			return nil, err
@@ -306,7 +306,7 @@ func (e *ewsEndpoint) getItems(ctx context.Context, ids []string, mime bool) ([]
 		} `xml:"Body>GetItemResponse>ResponseMessages>GetItemResponseMessage"`
 	}
 	if err := xml.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("EWS GetItem: разбор ответа: %w", err)
+		return nil, fmt.Errorf("EWS GetItem: parsing response: %w", err)
 	}
 	var items []ewsItem
 	for _, m := range out.Msgs {
@@ -352,11 +352,11 @@ func (e *ewsEndpoint) Open(id string) (Literal, error) {
 		return nil, err
 	}
 	if len(items) == 0 || items[0].MimeContent == "" {
-		return nil, fmt.Errorf("EWS: письмо %q без MIME-содержимого", id)
+		return nil, fmt.Errorf("EWS: message %q has no MIME content", id)
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(items[0].MimeContent))
 	if err != nil {
-		return nil, fmt.Errorf("EWS: декодирование MIME письма %q: %w", id, err)
+		return nil, fmt.Errorf("EWS: decoding MIME of message %q: %w", id, err)
 	}
 	return bytes.NewBuffer(raw), nil
 }
@@ -395,7 +395,7 @@ func (e *ewsEndpoint) Append(flags []string, _ time.Time, body Literal) (string,
 		} `xml:"Body>CreateItemResponse>ResponseMessages>CreateItemResponseMessage"`
 	}
 	if err := xml.Unmarshal(data, &out); err != nil {
-		return "", fmt.Errorf("EWS CreateItem: разбор ответа: %w", err)
+		return "", fmt.Errorf("EWS CreateItem: parsing response: %w", err)
 	}
 	if err := out.Msg.err("CreateItem"); err != nil {
 		return "", err
@@ -421,7 +421,7 @@ func ewsFlags(it ewsItem) []string {
 	return out
 }
 
-// ewsHeaderBlock собирает сырой блок заголовков RFC 822 из InternetMessageHeaders.
+// ewsHeaderBlock assembles a raw RFC 822 header block from InternetMessageHeaders.
 func ewsHeaderBlock(it ewsItem) []byte {
 	var b strings.Builder
 	seenMsgID, seenSubject := false, false

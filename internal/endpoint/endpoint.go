@@ -1,6 +1,5 @@
-// Package endpoint - абстракция «конец синхронизации». Синкер работает только
-// через эти интерфейсы и не знает, IMAP это, Maildir или EWS. Сейчас
-// реализован только IMAP (imap.go).
+// Package endpoint is the "sync endpoint" abstraction. The syncer works only
+// through these interfaces and does not know whether it is IMAP, Maildir or EWS.
 package endpoint
 
 import (
@@ -16,52 +15,53 @@ import (
 	"imapsync/internal/mailbox"
 )
 
-// Message - метаданные письма для построения индекса дедупликации.
+// Message is message metadata for building the deduplication index.
 type Message struct {
-	ID           string // UID (IMAP) / имя файла (Maildir) / ItemId (EWS) - непрозрачная строка
+	ID           string // UID (IMAP) / filename (Maildir) / ItemId (EWS) - opaque string
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
-	Header       []byte // сырой блок заголовков RFC 822
+	Header       []byte // raw RFC 822 header block
 }
 
-// Literal - тело письма с известной длиной (для Append).
+// Literal is a message body with a known length (for Append).
 type Literal = imap.Literal
 
-// Endpoint - открытая сессия одной стороны для одного пользователя. В каждый
-// момент выбрана не более одной папки (Select переключает).
+// Endpoint is an open session for one side and one user. At any moment at most
+// one folder is selected (Select switches).
 type Endpoint interface {
-	// Select резолвит имя папки (точное / SPECIAL-USE токен "\Sent" /
-	// регистронезависимо) и делает её текущей. Возвращает реальное имя и токен
-	// валидности: при его изменении все ранее полученные ID считаются невалидными.
+	// Select resolves a folder name (exact / SPECIAL-USE token "\Sent" /
+	// case-insensitive) and makes it current. Returns the real name and a
+	// validity token: when it changes, all previously obtained IDs are stale.
 	Select(name string) (folder, validity string, err error)
 
-	// ListIDs - ID всех писем в текущей папке.
+	// ListIDs - IDs of every message in the current folder.
 	ListIDs() ([]string, error)
 
-	// FetchMeta - метаданные писем по ID. ids == nil означает «все письма папки».
+	// FetchMeta - metadata of messages by ID. ids == nil means "all messages in
+	// the folder".
 	FetchMeta(ids []string) ([]Message, error)
 
-	// Open - тело письма целиком по ID.
+	// Open - the whole message body by ID.
 	Open(id string) (Literal, error)
 
-	// Append дописывает письмо в текущую папку. Возвращает ID нового письма
-	// ("" если транспорт его не сообщает - тогда оно подхватится в следующем цикле).
+	// Append adds a message to the current folder. Returns the new message's ID
+	// ("" if the transport does not report it - then it is picked up next cycle).
 	Append(flags []string, date time.Time, body Literal) (string, error)
 
-	// Close закрывает сессию.
+	// Close closes the session.
 	Close()
 }
 
-// Backend - фабрика сессий одной стороны (сервер + тип транспорта).
+// Backend is a session factory for one side (server + transport type).
 type Backend interface {
-	// Connect устанавливает сессию для пользователя user (authzid при IMAP).
+	// Connect establishes a session for user (authzid for IMAP).
 	Connect(ctx context.Context, user string) (Endpoint, error)
-	// Addr - человекочитаемый адрес для логов.
+	// Addr - a human-readable address for logs.
 	Addr() string
 }
 
-// NewBackend строит backend по конфигу сервера.
+// NewBackend builds a backend from the server config.
 func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecureTLS bool, fetchBatch int) (Backend, error) {
 	switch srv.Type {
 	case "", config.EndpointIMAP:
@@ -71,12 +71,12 @@ func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecur
 	case config.EndpointEWS:
 		return newEWSBackend(srv, ioTimeout, insecureTLS, fetchBatch), nil
 	default:
-		return nil, fmt.Errorf("тип эндпоинта %q не поддерживается (%q, %q, %q)",
+		return nil, fmt.Errorf("endpoint type %q is not supported (%q, %q, %q)",
 			srv.Type, config.EndpointIMAP, config.EndpointMaildir, config.EndpointEWS)
 	}
 }
 
-// prefixedLiteral - Literal из «префикс + тело» без копирования тела.
+// prefixedLiteral - a Literal of "prefix + body" without copying the body.
 type prefixedLiteral struct {
 	r      io.Reader
 	length int
@@ -85,9 +85,9 @@ type prefixedLiteral struct {
 func (p *prefixedLiteral) Read(b []byte) (int, error) { return p.r.Read(b) }
 func (p *prefixedLiteral) Len() int                   { return p.length }
 
-// WithHeader возвращает литерал письма с добавленным в начало заголовком
-// name: value (без копирования тела). Если такой заголовок уже есть - литерал
-// возвращается как есть.
+// WithHeader returns the message literal with a "name: value" header prepended
+// (without copying the body). If such a header is already present the literal is
+// returned as is.
 func WithHeader(body Literal, name, value string) Literal {
 	if buf, ok := body.(*bytes.Buffer); ok && mailbox.HasHeader(buf.Bytes(), name) {
 		return body

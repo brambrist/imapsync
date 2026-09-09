@@ -1,5 +1,5 @@
-// Package dedup строит индекс писем папки и вычисляет, каких писем не хватает
-// на каждой из сторон (дельту для копирования).
+// Package dedup builds an index of a folder's messages and computes which
+// messages are missing on each side (the delta to copy).
 package dedup
 
 import (
@@ -10,45 +10,46 @@ import (
 	"imapsync/internal/mailbox"
 )
 
-// Entry - письмо в индексе папки: метаданные для последующего Open тела и
-// Append на другую сторону, плюс ключи сопоставления.
+// Entry is a message in a folder index: metadata for the later Open of the body
+// and Append to the other side, plus the match keys.
 type Entry struct {
-	ID           string // непрозрачный ID письма на своей стороне
+	ID           string // opaque message ID on its own side
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
-	MsgID        string   // нормализованный Message-ID ("" если отсутствует)
-	Surrogate    string   // суррогатный хеш (для записи в X-Imapsync-Hash при копировании)
-	Keys         []string // все ключи сопоставления (см. mailbox.MatchKeys)
+	MsgID        string   // normalized Message-ID ("" if absent)
+	Surrogate    string   // surrogate hash (written into X-Imapsync-Hash on copy)
+	Keys         []string // all match keys (see mailbox.MatchKeys)
 }
 
-// Input - разобранное письмо для BuildFrom: подходит как для свежего FETCH, так
-// и для строки кэша состояния.
+// Input is a parsed message for BuildFrom: works both for a fresh FETCH and for
+// a state-cache row.
 type Input struct {
 	ID           string
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
-	MsgID        string // нормализованный Message-ID
-	XHash        string // значение X-Imapsync-Hash, если письмо помечалось нами
-	Surrogate    string // вычисленный суррогатный хеш
+	MsgID        string // normalized Message-ID
+	XHash        string // X-Imapsync-Hash value if we tagged this message
+	Surrogate    string // computed surrogate hash
 	Keys         []string
 }
 
-// Index - индекс писем одной папки.
+// Index is an index of one folder's messages.
 type Index struct {
-	byKey   map[string]*Entry // каждый ключ письма -> письмо
-	entries []*Entry          // все письма в порядке прихода
-	dups    int               // писем, чей ключ уже был в индексе (внутренние дубли)
+	byKey   map[string]*Entry // every message key -> message
+	entries []*Entry          // all messages in arrival order
+	dups    int               // messages whose key was already in the index (internal dups)
 }
 
-// Len - число уникальных писем в индексе.
+// Len is the number of unique messages in the index.
 func (idx *Index) Len() int { return len(idx.entries) }
 
-// Dups - число писем, оказавшихся внутренними дублями при построении индекса.
+// Dups is the number of messages that turned out to be internal duplicates
+// while building the index.
 func (idx *Index) Dups() int { return idx.dups }
 
-// has сообщает, есть ли в индексе письмо хотя бы по одному из ключей.
+// has reports whether the index already holds a message under any of the keys.
 func (idx *Index) has(keys []string) bool {
 	for _, k := range keys {
 		if _, ok := idx.byKey[k]; ok {
@@ -58,8 +59,8 @@ func (idx *Index) has(keys []string) bool {
 	return false
 }
 
-// Build создаёт индекс из метаданных писем: разбирает заголовки и делегирует в
-// BuildFrom. hashHeader - имя заголовка с суррогатным хешем (из конфига).
+// Build creates an index from message metadata: parses the headers and delegates
+// to BuildFrom. hashHeader is the surrogate-hash header name (from config).
 func Build(msgs []endpoint.Message, hashHeader string) (*Index, []error) {
 	inputs := make([]Input, 0, len(msgs))
 	var errs []error
@@ -74,11 +75,11 @@ func Build(msgs []endpoint.Message, hashHeader string) (*Index, []error) {
 	return BuildFrom(inputs), errs
 }
 
-// ParseMessage разбирает заголовки одного письма в Input.
+// ParseMessage parses one message's headers into an Input.
 func ParseMessage(m endpoint.Message, hashHeader string) (Input, error) {
 	f, err := mailbox.ParseFields(m.Header, hashHeader)
 	if err != nil {
-		return Input{}, fmt.Errorf("письмо id=%s: %w", m.ID, err)
+		return Input{}, fmt.Errorf("message id=%s: %w", m.ID, err)
 	}
 	sur := mailbox.SurrogateHash(f)
 	return Input{
@@ -93,13 +94,13 @@ func ParseMessage(m endpoint.Message, hashHeader string) (Input, error) {
 	}, nil
 }
 
-// Keys восстанавливает ключи сопоставления из компонентов (для строки кэша).
+// Keys rebuilds the match keys from components (for a cache row).
 func Keys(msgID, xhash, surrogate string) []string {
 	return mailbox.MatchKeysFrom(msgID, xhash, surrogate)
 }
 
-// BuildFrom строит индекс из уже разобранных писем. Ключи в Input.Keys должны
-// быть заполнены (см. mailbox.MatchKeys / MatchKeysFrom).
+// BuildFrom builds an index from already-parsed messages. Input.Keys must be
+// filled in (see mailbox.MatchKeys / MatchKeysFrom).
 func BuildFrom(inputs []Input) *Index {
 	idx := &Index{byKey: make(map[string]*Entry, len(inputs)), entries: make([]*Entry, 0, len(inputs))}
 	for _, in := range inputs {
@@ -124,7 +125,7 @@ func BuildFrom(inputs []Input) *Index {
 	return idx
 }
 
-// Missing возвращает письма из src, которых нет в dst (по любому из ключей).
+// Missing returns the messages from src that are not in dst (by any key).
 func Missing(src, dst *Index) []*Entry {
 	var out []*Entry
 	for _, e := range src.entries {
@@ -135,8 +136,8 @@ func Missing(src, dst *Index) []*Entry {
 	return out
 }
 
-// Delta вычисляет обе дельты сразу: чего не хватает на стороне B (надо лить A->B)
-// и чего не хватает на стороне A (надо лить B->A).
+// Delta computes both deltas at once: what is missing on side B (needs A->B) and
+// what is missing on side A (needs B->A).
 func Delta(a, b *Index) (missingOnB, missingOnA []*Entry) {
 	return Missing(a, b), Missing(b, a)
 }

@@ -11,7 +11,7 @@ import (
 
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	cfgPath := fs.String("config", "config.yaml", "путь к YAML-конфигу")
+	cfgPath := fs.String("config", "config.yaml", "path to the YAML config")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -25,16 +25,16 @@ func cmdRun(args []string) error {
 		if err := loadFromSQLite(cfg); err != nil {
 			return err
 		}
-		log.Printf("конфигурация из sqlite %s: юзеров=%d, пар папок=%d", cfg.SQLitePath, len(cfg.Users), len(cfg.Folders))
+		log.Printf("config from sqlite %s: users=%d, folder pairs=%d", cfg.SQLitePath, len(cfg.Users), len(cfg.Folders))
 	} else {
-		log.Printf("конфигурация из YAML: юзеров=%d, пар папок=%d", len(cfg.Users), len(cfg.Folders))
+		log.Printf("config from YAML: users=%d, folder pairs=%d", len(cfg.Users), len(cfg.Folders))
 	}
 
 	return runDaemon(cfg)
 }
 
-// loadFromSQLite дозагружает списки юзеров и папок из БД и валидирует их.
-// БД закрывается сразу после чтения - демону она больше не нужна.
+// loadFromSQLite loads the user and folder lists from the DB and validates them.
+// The DB is closed right after reading - the daemon does not need it anymore.
 func loadFromSQLite(cfg *config.Config) error {
 	st, err := store.Open(cfg.SQLitePath)
 	if err != nil {
@@ -46,7 +46,7 @@ func loadFromSQLite(cfg *config.Config) error {
 		return err
 	}
 	if err := cfg.ValidateEntities(); err != nil {
-		return fmt.Errorf("проверка данных из sqlite %s: %w", cfg.SQLitePath, err)
+		return fmt.Errorf("checking data from sqlite %s: %w", cfg.SQLitePath, err)
 	}
 	return nil
 }

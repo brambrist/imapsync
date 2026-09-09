@@ -1,6 +1,6 @@
-// Package syncer - синхронизация одного пользователя: подключение к обоим
-// концам, построение индексов по каждой паре папок, вычисление дельты и
-// дописывание недостающих писем в обе стороны (только append).
+// Package syncer synchronizes one user: connect to both endpoints, build
+// indexes for each folder pair, compute the delta and append the missing
+// messages to both sides (append only).
 package syncer
 
 import (
@@ -20,24 +20,25 @@ import (
 	"imapsync/internal/store"
 )
 
-// Syncer держит общую конфигурацию, бэкенды обоих концов и коллектор статистики.
+// Syncer holds the shared config, both endpoint backends and the stats
+// collector.
 type Syncer struct {
 	cfg      *config.Config
 	stats    *stats.Collector
 	logf     stats.Logf
-	state    *store.Store // != nil => инкрементальная сверка через кэш и запись user_status
+	state    *store.Store // != nil => incremental reconciliation via cache and user_status writes
 	backendA endpoint.Backend
 	backendB endpoint.Backend
 }
 
-// New создаёт синкер с полной сверкой папок каждый цикл.
+// New creates a syncer that does a full folder reconciliation every cycle.
 func New(cfg *config.Config, coll *stats.Collector, logf stats.Logf) *Syncer {
 	return NewWithState(cfg, coll, logf, nil)
 }
 
-// NewWithState создаёт синкер; если state != nil, включается инкрементальная
-// сверка (при cfg.StateCache) и запись статуса юзеров. Паникует, если бэкенд не
-// собрать - конфиг должен быть провалидирован заранее.
+// NewWithState creates a syncer; if state != nil, incremental reconciliation
+// (with cfg.StateCache) and user status writes are enabled. Panics if a backend
+// cannot be built - the config must be validated beforehand.
 func NewWithState(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st *store.Store) *Syncer {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -56,8 +57,8 @@ func NewWithState(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st
 	}
 }
 
-// флаги, которые имеет смысл переносить при копировании письма.
-// \Recent проставить нельзя, \Deleted не переносим (удаления не синхронизируем).
+// flags worth carrying over when copying a message.
+// \Recent cannot be set, \Deleted is not carried (we don't sync deletions).
 var copyableFlags = map[string]bool{
 	`\Seen`:     true,
 	`\Answered`: true,
@@ -65,29 +66,30 @@ var copyableFlags = map[string]bool{
 	`\Draft`:    true,
 }
 
-// incremental - true, если для этого синкера включён режим кэша состояния.
+// incremental - true if the state-cache mode is enabled for this syncer.
 func (s *Syncer) incremental() bool { return s.cfg.StateCache && s.state != nil }
 
-// userStopped - достиг ли юзер лимита ошибок подряд (max_fail_streak).
+// userStopped - whether the user has hit the consecutive-error limit
+// (max_fail_streak). If so - log and skip them for this cycle.
 func (s *Syncer) userStopped(name string) bool {
 	if s.state == nil || s.cfg.MaxFailStreak <= 0 {
 		return false
 	}
 	st, ok, err := s.state.UserStatusOf(name)
 	if err != nil {
-		s.logf("юзер %s: не удалось проверить серию ошибок: %v", name, err)
+		s.logf("user %s: could not check the error streak: %v", name, err)
 		return false
 	}
 	if ok && st.FailStreak >= int64(s.cfg.MaxFailStreak) {
-		s.logf("юзер %s: синк остановлен - %d ошибок подряд (с %s), сброс: imapsync db-resume-user -name %s",
+		s.logf("user %s: sync stopped - %d consecutive errors (since %s), reset: imapsync db-resume-user -name %s",
 			name, st.FailStreak, st.FailSince.Format("2006-01-02 15:04:05"), name)
 		return true
 	}
 	return false
 }
 
-// SyncUser обрабатывает пользователя целиком. Ошибки не пробрасываются наружу -
-// они логируются с контекстом и попадают в статистику юзера.
+// SyncUser processes a user end to end. Errors are not propagated - they are
+// logged with context and recorded in the user's stats.
 func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
 	if s.userStopped(u.Name) {
 		return
@@ -108,7 +110,7 @@ func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
 
 	for _, fp := range s.cfg.Folders {
 		if err := ctx.Err(); err != nil {
-			s.recordErr(us, fmt.Errorf("юзер %s: обработка прервана: %w", u.Name, err))
+			s.recordErr(us, fmt.Errorf("user %s: processing interrupted: %w", u.Name, err))
 			return
 		}
 		err := sess.syncPair(fp)
@@ -117,7 +119,7 @@ func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
 		}
 		s.recordErr(us, err)
 		if isConnErr(err) {
-			s.logf("юзер %s: соединение потеряно, переподключение", u.Name)
+			s.logf("user %s: connection lost, reconnecting", u.Name)
 			if !sess.reconnect() {
 				return
 			}
@@ -128,7 +130,8 @@ func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
 	}
 }
 
-// session - состояние обработки одного юзера: оба конца, контекст, счётчики.
+// session - the processing state of one user: both endpoints, the context, the
+// counters.
 type session struct {
 	s   *Syncer
 	ctx context.Context
@@ -141,13 +144,13 @@ type session struct {
 func (sess *session) connect() bool {
 	a, err := sess.s.dial(sess.ctx, sess.s.backendA, sess.u.UserA)
 	if err != nil {
-		sess.s.recordErr(sess.us, fmt.Errorf("юзер %s: %w", sess.u.Name, err))
+		sess.s.recordErr(sess.us, fmt.Errorf("user %s: %w", sess.u.Name, err))
 		return false
 	}
 	b, err := sess.s.dial(sess.ctx, sess.s.backendB, sess.u.UserB)
 	if err != nil {
 		a.Close()
-		sess.s.recordErr(sess.us, fmt.Errorf("юзер %s: %w", sess.u.Name, err))
+		sess.s.recordErr(sess.us, fmt.Errorf("user %s: %w", sess.u.Name, err))
 		return false
 	}
 	sess.a, sess.b = a, b
@@ -170,7 +173,7 @@ func (sess *session) close() {
 	}
 }
 
-// dial подключается к концу с повторами при транзиентных ошибках.
+// dial connects to an endpoint, retrying on transient errors.
 func (s *Syncer) dial(ctx context.Context, backend endpoint.Backend, user string) (endpoint.Endpoint, error) {
 	attempts := max(1, s.cfg.ConnectRetries+1)
 	var lastErr error
@@ -182,7 +185,7 @@ func (s *Syncer) dial(ctx context.Context, backend endpoint.Backend, user string
 				return nil, ctx.Err()
 			case <-time.After(backoff):
 			}
-			s.logf("повтор подключения к %s (юзер %s), попытка %d/%d", backend.Addr(), user, i+1, attempts)
+			s.logf("retrying connection to %s (user %s), attempt %d/%d", backend.Addr(), user, i+1, attempts)
 		}
 		ep, err := backend.Connect(ctx, user)
 		if err == nil {
@@ -190,24 +193,24 @@ func (s *Syncer) dial(ctx context.Context, backend endpoint.Backend, user string
 		}
 		lastErr = err
 		if !isConnErr(err) {
-			break // ошибка не похожа на транзиентную (нет каталога, отказ авторизации) - без повторов
+			break // the error does not look transient (missing dir, auth failure) - no retries
 		}
 	}
 	return nil, lastErr
 }
 
-// syncPair синхронизирует одну пару папок в обе стороны. Возвращает ошибку
-// уровня папки (Select/List/Fetch); ошибки отдельных писем логируются внутри.
+// syncPair synchronizes one folder pair in both directions. Returns a
+// folder-level error (Select/List/Fetch); per-message errors are logged inside.
 func (sess *session) syncPair(fp config.FolderPair) error {
 	s, u, us := sess.s, sess.u, sess.us
 
 	folderA, validA, err := sess.a.Select(fp.A)
 	if err != nil {
-		return fmt.Errorf("юзер %s, папка A %q: %w", u.Name, fp.A, err)
+		return fmt.Errorf("user %s, folder A %q: %w", u.Name, fp.A, err)
 	}
 	folderB, validB, err := sess.b.Select(fp.B)
 	if err != nil {
-		return fmt.Errorf("юзер %s, папка B %q: %w", u.Name, fp.B, err)
+		return fmt.Errorf("user %s, folder B %q: %w", u.Name, fp.B, err)
 	}
 
 	idxA, err := s.indexFolder(sess, "a", fp, folderA, validA)
@@ -219,8 +222,8 @@ func (sess *session) syncPair(fp config.FolderPair) error {
 		return err
 	}
 
-	// Обе дельты считаем ДО каких-либо append, чтобы только что скопированное
-	// письмо не поехало обратно в том же цикле.
+	// Compute both deltas BEFORE any append, so a just-copied message does not
+	// travel back in the same cycle.
 	missingOnB, missingOnA := dedup.Delta(idxA, idxB)
 
 	skipped := (idxA.Len() - len(missingOnB)) + (idxB.Len() - len(missingOnA))
@@ -239,12 +242,12 @@ func (sess *session) syncPair(fp config.FolderPair) error {
 	if s.incremental() {
 		if len(cacheB) > 0 {
 			if err := s.state.PutCachedMsgs(u.Name, pair, "b", cacheB); err != nil {
-				s.recordErr(us, fmt.Errorf("юзер %s, папка B %q: до-запись кэша: %w", u.Name, folderB, err))
+				s.recordErr(us, fmt.Errorf("user %s, folder B %q: post-write to cache: %w", u.Name, folderB, err))
 			}
 		}
 		if len(cacheA) > 0 {
 			if err := s.state.PutCachedMsgs(u.Name, pair, "a", cacheA); err != nil {
-				s.recordErr(us, fmt.Errorf("юзер %s, папка A %q: до-запись кэша: %w", u.Name, folderA, err))
+				s.recordErr(us, fmt.Errorf("user %s, folder A %q: post-write to cache: %w", u.Name, folderA, err))
 			}
 		}
 	}
@@ -258,7 +261,7 @@ func (sess *session) endpoint(side string) endpoint.Endpoint {
 	return sess.a
 }
 
-// indexFolder строит индекс писем одной стороны папки. side - "a" | "b".
+// indexFolder builds the message index for one side of a folder. side - "a" | "b".
 func (s *Syncer) indexFolder(sess *session, side string, fp config.FolderPair, folder, validity string) (*dedup.Index, error) {
 	if s.incremental() {
 		return s.indexFolderIncremental(sess, side, fp, folder, validity)
@@ -266,28 +269,28 @@ func (s *Syncer) indexFolder(sess *session, side string, fp config.FolderPair, f
 	return s.indexFolderFull(sess, side, folder)
 }
 
-// indexFolderFull забирает и разбирает заголовки всех писем папки.
+// indexFolderFull fetches and parses the headers of every message in the folder.
 func (s *Syncer) indexFolderFull(sess *session, side, folder string) (*dedup.Index, error) {
 	msgs, err := sess.endpoint(side).FetchMeta(nil)
 	if err != nil {
-		return nil, fmt.Errorf("юзер %s, папка %s %q: %w", sess.u.Name, side, folder, err)
+		return nil, fmt.Errorf("user %s, folder %s %q: %w", sess.u.Name, side, folder, err)
 	}
 	idx, errs := dedup.Build(msgs, s.cfg.HashHeader)
 	for _, e := range errs {
-		s.recordErr(sess.us, fmt.Errorf("юзер %s, папка %s %q: разбор: %w", sess.u.Name, side, folder, e))
+		s.recordErr(sess.us, fmt.Errorf("user %s, folder %s %q: parse: %w", sess.u.Name, side, folder, e))
 	}
 	return idx, nil
 }
 
-// indexFolderIncremental берёт список ID, фетчит метаданные только для новых
-// писем, остальное поднимает из кэша sqlite; кэш при этом обновляется.
-// Периодически (full_resync_every) делает полный пере-скан.
+// indexFolderIncremental takes the ID list, fetches metadata only for new
+// messages, loads the rest from the sqlite cache, and updates the cache. It
+// periodically (full_resync_every) does a full rescan.
 func (s *Syncer) indexFolderIncremental(sess *session, side string, fp config.FolderPair, folder, validity string) (*dedup.Index, error) {
 	u, us := sess.u, sess.us
 	ep := sess.endpoint(side)
 	pair := store.PairKey(fp.A, fp.B)
 	wrap := func(err error) error {
-		return fmt.Errorf("юзер %s, папка %s %q: %w", u.Name, side, folder, err)
+		return fmt.Errorf("user %s, folder %s %q: %w", u.Name, side, folder, err)
 	}
 
 	saved, cached, err := s.state.LoadEndpoint(u.Name, pair, side)
@@ -298,10 +301,10 @@ func (s *Syncer) indexFolderIncremental(sess *session, side string, fp config.Fo
 	resyncAt := saved.FullResyncAt
 	reset := func(reason string) error {
 		if len(cached) > 0 {
-			s.logf("юзер %s, папка %s %q: %s, полный пере-скан", u.Name, side, folder, reason)
+			s.logf("user %s, folder %s %q: %s, full rescan", u.Name, side, folder, reason)
 		}
 		if err := s.state.ResetEndpoint(u.Name, pair, side); err != nil {
-			return wrap(fmt.Errorf("сброс кэша: %w", err))
+			return wrap(fmt.Errorf("resetting cache: %w", err))
 		}
 		cached = map[string]store.CachedMsg{}
 		resyncAt = time.Now()
@@ -310,11 +313,11 @@ func (s *Syncer) indexFolderIncremental(sess *session, side string, fp config.Fo
 
 	switch {
 	case saved.Exists && saved.Validity != validity:
-		if err := reset(fmt.Sprintf("валидность папки изменилась (%q -> %q)", saved.Validity, validity)); err != nil {
+		if err := reset(fmt.Sprintf("folder validity changed (%q -> %q)", saved.Validity, validity)); err != nil {
 			return nil, err
 		}
 	case s.cfg.FullResyncEvery.Std() > 0 && time.Since(saved.FullResyncAt) >= s.cfg.FullResyncEvery.Std():
-		if err := reset("плановый полный пере-скан"); err != nil {
+		if err := reset("scheduled full rescan"); err != nil {
 			return nil, err
 		}
 	}
@@ -361,25 +364,25 @@ func (s *Syncer) indexFolderIncremental(sess *session, side string, fp config.Fo
 	}
 
 	if err := s.state.PutCachedMsgs(u.Name, pair, side, fresh); err != nil {
-		s.recordErr(us, wrap(fmt.Errorf("запись кэша: %w", err)))
+		s.recordErr(us, wrap(fmt.Errorf("writing cache: %w", err)))
 	}
 	if len(goneIDs) > 0 {
 		if err := s.state.DeleteCachedMsgs(u.Name, pair, side, goneIDs); err != nil {
-			s.recordErr(us, wrap(fmt.Errorf("чистка кэша: %w", err)))
+			s.recordErr(us, wrap(fmt.Errorf("cleaning cache: %w", err)))
 		}
 		for _, id := range goneIDs {
 			delete(cached, id)
 		}
 	}
 	if err := s.state.SaveEndpoint(u.Name, pair, side, validity, resyncAt); err != nil {
-		s.recordErr(us, wrap(fmt.Errorf("запись эндпоинта: %w", err)))
+		s.recordErr(us, wrap(fmt.Errorf("writing endpoint: %w", err)))
 	}
 
 	inputs := make([]dedup.Input, 0, len(curIDs))
 	for _, id := range curIDs {
 		cm, ok := cached[id]
 		if !ok {
-			continue // разбор нового письма упал
+			continue // parsing a new message failed
 		}
 		inputs = append(inputs, dedup.Input{
 			ID:           cm.ID,
@@ -392,28 +395,28 @@ func (s *Syncer) indexFolderIncremental(sess *session, side string, fp config.Fo
 		})
 	}
 	if len(newIDs) > 0 || len(goneIDs) > 0 {
-		s.logf("юзер %s, папка %s %q: инкрементально - новых %d, удалено %d, всего %d",
+		s.logf("user %s, folder %s %q: incremental - new %d, removed %d, total %d",
 			u.Name, side, folder, len(newIDs), len(goneIDs), len(inputs))
 	}
 	return dedup.BuildFrom(inputs), nil
 }
 
-// copyMissing копирует письма entries из src в текущую папку на dst.
-// Возвращает число успешно скопированных и (в инкрементальном режиме) их
-// закэшированные представления для стороны назначения.
+// copyMissing copies the messages in entries from src to the current folder on
+// dst. Returns the number of successfully copied messages and (in incremental
+// mode) their cached representations for the destination side.
 func (s *Syncer) copyMissing(sess *session, src, dst endpoint.Endpoint, entries []*dedup.Entry, dir, srcFolder, dstFolder string) (int, []store.CachedMsg) {
 	n := 0
 	var cache []store.CachedMsg
 	for i, e := range entries {
 		if i%64 == 0 {
 			if err := sess.ctx.Err(); err != nil {
-				s.recordErr(sess.us, fmt.Errorf("юзер %s, %s (%q): прервано: %w", sess.u.Name, dir, srcFolder, err))
+				s.recordErr(sess.us, fmt.Errorf("user %s, %s (%q): interrupted: %w", sess.u.Name, dir, srcFolder, err))
 				return n, cache
 			}
 		}
 		newID, err := s.copyOne(src, dst, e)
 		if err != nil {
-			s.recordErr(sess.us, fmt.Errorf("юзер %s, %s (%q -> %q), id=%s: %w", sess.u.Name, dir, srcFolder, dstFolder, e.ID, err))
+			s.recordErr(sess.us, fmt.Errorf("user %s, %s (%q -> %q), id=%s: %w", sess.u.Name, dir, srcFolder, dstFolder, e.ID, err))
 			continue
 		}
 		n++
@@ -427,9 +430,10 @@ func (s *Syncer) copyMissing(sess *session, src, dst endpoint.Endpoint, entries 
 	return n, cache
 }
 
-// copyOne забирает письмо целиком, добавляет суррогатный хеш в кастомный
-// заголовок (потоково) и дописывает в текущую папку dst с сохранением флагов и
-// внутренней даты. Возвращает ID нового письма ("" если транспорт не сообщает).
+// copyOne fetches the whole message, adds the surrogate hash into the custom
+// header (streaming) and appends it to the current folder on dst, preserving
+// flags and the internal date. Returns the new message ID ("" if the transport
+// does not report one).
 func (s *Syncer) copyOne(src, dst endpoint.Endpoint, e *dedup.Entry) (string, error) {
 	body, err := src.Open(e.ID)
 	if err != nil {
@@ -439,7 +443,7 @@ func (s *Syncer) copyOne(src, dst endpoint.Endpoint, e *dedup.Entry) (string, er
 	return dst.Append(filterFlags(e.Flags), e.InternalDate, msg)
 }
 
-// filterFlags оставляет только переносимые флаги.
+// filterFlags keeps only the transferable flags.
 func filterFlags(flags []string) []string {
 	out := make([]string, 0, len(flags))
 	for _, f := range flags {
@@ -450,7 +454,7 @@ func filterFlags(flags []string) []string {
 	return out
 }
 
-// isConnErr - похоже ли на потерю соединения (повод переподключиться).
+// isConnErr - whether this looks like a lost connection (a reason to reconnect).
 func isConnErr(err error) bool {
 	if err == nil {
 		return false
@@ -475,13 +479,14 @@ func isConnErr(err error) bool {
 	return false
 }
 
-// recordErr логирует ошибку с контекстом и учитывает её в статистике юзера.
+// recordErr logs an error with context and records it in the user's stats.
 func (s *Syncer) recordErr(us *stats.UserStats, err error) {
 	us.AddError(err)
-	s.logf("ошибка: %v", err)
+	s.logf("error: %v", err)
 }
 
-// persistStatus сохраняет итог прохода по юзеру в БД (если открыт store).
+// persistStatus saves the run outcome for a user into the DB (if a store is
+// open).
 func (s *Syncer) persistStatus(name string, us *stats.UserStats) {
 	if s.state == nil {
 		return
@@ -500,6 +505,6 @@ func (s *Syncer) persistStatus(name string, us *stats.UserStats) {
 		run.Status = "error"
 	}
 	if err := s.state.RecordRun(name, run); err != nil {
-		s.logf("юзер %s: не удалось записать статус в БД: %v", name, err)
+		s.logf("user %s: could not write status to the DB: %v", name, err)
 	}
 }

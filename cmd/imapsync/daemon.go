@@ -12,16 +12,16 @@ import (
 	"imapsync/internal/syncer"
 )
 
-// runDaemon запускает бесконечный цикл синхронизации и корректно завершается
-// по SIGINT/SIGTERM.
+// runDaemon runs the endless sync loop and shuts down cleanly on SIGINT/SIGTERM.
 func runDaemon(cfg *config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	logf := log.Printf
 
-	// БД нужна для инкрементальной сверки, статусов юзеров и ограничения по
-	// серии ошибок. Эксклюзивная блокировка: два демона на одну БД побьют состояние.
+	// The DB is needed for incremental reconciliation, user statuses and the
+	// error-streak limit. Exclusive lock: two daemons on one DB would corrupt
+	// the state.
 	needDB := cfg.StateCache || cfg.Source == config.SourceSQLite ||
 		(cfg.MaxFailStreak > 0 && cfg.SQLitePath != "")
 	var st *store.Store
@@ -33,26 +33,26 @@ func runDaemon(cfg *config.Config) error {
 		}
 		defer st.Close()
 		if cfg.StateCache {
-			logf("инкрементальная сверка включена, кэш: %s (full_resync каждые %s)",
+			logf("incremental reconciliation enabled, cache: %s (full_resync every %s)",
 				cfg.SQLitePath, cfg.FullResyncEvery.Std())
 		}
 		if cfg.MaxFailStreak > 0 {
-			logf("остановка синка юзера после %d ошибок подряд (сброс: imapsync db-resume-user)", cfg.MaxFailStreak)
+			logf("a user's sync stops after %d consecutive errors (reset: imapsync db-resume-user)", cfg.MaxFailStreak)
 		}
 	} else if cfg.MaxFailStreak > 0 {
-		logf("внимание: max_fail_streak=%d задан, но нет БД (нужен sqlite_path или state_cache) - ограничение не действует", cfg.MaxFailStreak)
+		logf("warning: max_fail_streak=%d is set but there is no DB (needs sqlite_path or state_cache) - the limit has no effect", cfg.MaxFailStreak)
 	}
 
 	coll := stats.New()
 	pool := syncer.NewPool(cfg, coll, logf, st)
 
-	logf("запуск: A=%s B=%s, юзеров=%d, воркеров=%d, интервал цикла=%s",
+	logf("starting: A=%s B=%s, users=%d, workers=%d, cycle interval=%s",
 		cfg.ServerA.Addr(), cfg.ServerB.Addr(), len(cfg.Users), cfg.Workers, cfg.SyncInterval.Std())
 
 	pool.Run(ctx)
 
 	if ctx.Err() != nil {
-		logf("получен сигнал завершения, демон остановлен")
+		logf("shutdown signal received, daemon stopped")
 	}
 	return nil
 }

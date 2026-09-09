@@ -1,5 +1,5 @@
-// Package stats - потокобезопасные счётчики синхронизации: по каждому юзеру и
-// агрегат по всем, плюс периодический вывод сводки и текущих юзеров.
+// Package stats provides thread-safe sync counters: per-user and an aggregate
+// over all, plus periodic printing of the summary and the in-progress users.
 package stats
 
 import (
@@ -12,18 +12,19 @@ import (
 	"time"
 )
 
-// Logf - функция логирования (обычно log.Printf).
+// Logf is a logging function (usually log.Printf).
 type Logf func(format string, args ...any)
 
-// Counters - набор атомарных счётчиков по одному направлению работы.
+// Counters is a set of atomic counters for one direction of work.
 type Counters struct {
-	CopiedAToB atomic.Int64 // скопировано писем A -> B
-	CopiedBToA atomic.Int64 // скопировано писем B -> A
-	SkippedDup atomic.Int64 // пропущено как уже существующие (дубли)
-	Errors     atomic.Int64 // ошибок при обработке
+	CopiedAToB atomic.Int64 // messages copied A -> B
+	CopiedBToA atomic.Int64 // messages copied B -> A
+	SkippedDup atomic.Int64 // skipped as already present (duplicates)
+	Errors     atomic.Int64 // errors during processing
 }
 
-// UserStats - счётчики и состояние обработки одного юзера за текущий цикл.
+// UserStats holds the counters and processing state of one user for the current
+// cycle.
 type UserStats struct {
 	Name string
 
@@ -35,12 +36,12 @@ type UserStats struct {
 	done    time.Time
 }
 
-// IncCopiedAToB и прочие Inc* - потокобезопасное увеличение счётчиков.
+// IncCopiedAToB and the other Inc* methods bump counters thread-safely.
 func (u *UserStats) IncCopiedAToB(n int) { u.c.CopiedAToB.Add(int64(n)) }
 func (u *UserStats) IncCopiedBToA(n int) { u.c.CopiedBToA.Add(int64(n)) }
 func (u *UserStats) IncSkippedDup(n int) { u.c.SkippedDup.Add(int64(n)) }
 
-// AddError увеличивает счётчик ошибок и запоминает текст последней.
+// AddError bumps the error counter and remembers the last error text.
 func (u *UserStats) AddError(err error) {
 	u.c.Errors.Add(1)
 	u.mu.Lock()
@@ -48,7 +49,7 @@ func (u *UserStats) AddError(err error) {
 	u.mu.Unlock()
 }
 
-// Report - потокобезопасный снимок статистики юзера.
+// Report is a thread-safe snapshot of a user's stats.
 func (u *UserStats) Report() UserReport { return u.snapshot() }
 
 func (u *UserStats) snapshot() UserReport {
@@ -67,7 +68,7 @@ func (u *UserStats) snapshot() UserReport {
 	}
 }
 
-// UserReport - неизменяемый снимок статистики юзера.
+// UserReport is an immutable snapshot of a user's stats.
 type UserReport struct {
 	Name                                       string
 	CopiedAToB, CopiedBToA, SkippedDup, Errors int64
@@ -75,10 +76,10 @@ type UserReport struct {
 	LastErr                                    string
 }
 
-// InProgress - true если юзер начат, но ещё не завершён.
+// InProgress is true if the user has started but not yet finished.
 func (r UserReport) InProgress() bool { return !r.Started.IsZero() && r.Done.IsZero() }
 
-// Collector агрегирует статистику по всем юзерам за текущий цикл.
+// Collector aggregates stats over all users for the current cycle.
 type Collector struct {
 	mu     sync.RWMutex
 	byName map[string]*UserStats
@@ -87,12 +88,12 @@ type Collector struct {
 	cycleT time.Time
 }
 
-// New создаёт коллектор.
+// New creates a collector.
 func New() *Collector {
 	return &Collector{byName: make(map[string]*UserStats)}
 }
 
-// BeginCycle сбрасывает всю статистику и начинает новый цикл синхронизации.
+// BeginCycle resets all stats and starts a new sync cycle.
 func (c *Collector) BeginCycle() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -102,7 +103,7 @@ func (c *Collector) BeginCycle() {
 	c.cycleT = time.Now()
 }
 
-// BeginUser регистрирует юзера в текущем цикле и помечает начало обработки.
+// BeginUser registers a user in the current cycle and marks processing start.
 func (c *Collector) BeginUser(name string) *UserStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,14 +120,14 @@ func (c *Collector) BeginUser(name string) *UserStats {
 	return u
 }
 
-// EndUser помечает завершение обработки юзера.
+// EndUser marks the end of a user's processing.
 func (c *Collector) EndUser(u *UserStats) {
 	u.mu.Lock()
 	u.done = time.Now()
 	u.mu.Unlock()
 }
 
-// Report - агрегированный снимок за текущий цикл.
+// Report is an aggregated snapshot for the current cycle.
 type Report struct {
 	Cycle   int
 	Elapsed time.Duration
@@ -136,7 +137,7 @@ type Report struct {
 	}
 }
 
-// Snapshot собирает снимок статистики по всем юзерам.
+// Snapshot collects a stats snapshot over all users.
 func (c *Collector) Snapshot() Report {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -157,45 +158,45 @@ func (c *Collector) Snapshot() Report {
 	return rep
 }
 
-// LogSummary выводит сводку по всем юзерам и агрегат.
+// LogSummary prints a per-user summary and the aggregate.
 func (c *Collector) LogSummary(logf Logf) {
 	rep := c.Snapshot()
 	var b strings.Builder
-	fmt.Fprintf(&b, "сводка (цикл %d, прошло %s): всего A->B=%d B->A=%d дублей=%d ошибок=%d; юзеров=%d",
+	fmt.Fprintf(&b, "summary (cycle %d, elapsed %s): total A->B=%d B->A=%d dups=%d errors=%d; users=%d",
 		rep.Cycle, rep.Elapsed.Round(time.Second),
 		rep.Total.CopiedAToB, rep.Total.CopiedBToA, rep.Total.SkippedDup, rep.Total.Errors, len(rep.Users))
 
 	inProg := make([]string, 0)
 	for _, u := range rep.Users {
 		if u.InProgress() {
-			inProg = append(inProg, fmt.Sprintf("%s(A->B=%d,B->A=%d,дубли=%d,ош=%d)",
+			inProg = append(inProg, fmt.Sprintf("%s(A->B=%d,B->A=%d,dups=%d,err=%d)",
 				u.Name, u.CopiedAToB, u.CopiedBToA, u.SkippedDup, u.Errors))
 		}
 	}
 	sort.Strings(inProg)
 	if len(inProg) > 0 {
-		fmt.Fprintf(&b, "; в работе: %s", strings.Join(inProg, " "))
+		fmt.Fprintf(&b, "; in progress: %s", strings.Join(inProg, " "))
 	}
 	logf("%s", b.String())
 }
 
-// LogUser выводит итог по одному юзеру (вызывать после EndUser).
+// LogUser prints the result for one user (call it after EndUser).
 func (c *Collector) LogUser(u *UserStats, logf Logf) {
 	r := u.snapshot()
 	dur := ""
 	if !r.Started.IsZero() && !r.Done.IsZero() {
-		dur = " за " + r.Done.Sub(r.Started).Round(time.Millisecond).String()
+		dur = " in " + r.Done.Sub(r.Started).Round(time.Millisecond).String()
 	}
-	msg := fmt.Sprintf("юзер %s%s: скопировано A->B=%d B->A=%d, пропущено дублей=%d, ошибок=%d",
+	msg := fmt.Sprintf("user %s%s: copied A->B=%d B->A=%d, skipped dups=%d, errors=%d",
 		r.Name, dur, r.CopiedAToB, r.CopiedBToA, r.SkippedDup, r.Errors)
 	if r.LastErr != "" {
-		msg += fmt.Sprintf(" (последняя ошибка: %s)", r.LastErr)
+		msg += fmt.Sprintf(" (last error: %s)", r.LastErr)
 	}
 	logf("%s", msg)
 }
 
-// StartReporter запускает горутину, которая раз в every выводит сводку.
-// Возвращает функцию остановки; она дожидается завершения горутины.
+// StartReporter starts a goroutine that prints the summary every `every`.
+// Returns a stop function; it waits for the goroutine to finish.
 func (c *Collector) StartReporter(ctx context.Context, every time.Duration, logf Logf) (stop func()) {
 	if every <= 0 {
 		return func() {}

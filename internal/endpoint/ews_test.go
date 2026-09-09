@@ -24,8 +24,8 @@ func ewsBackendFor(t *testing.T, url string) Backend {
 	return b
 }
 
-const ewsMsg = "Subject: привет\r\nFrom: a@b\r\nDate: Wed, 09 Sep 2026 12:00:00 +0000\r\n" +
-	"Message-ID: <ews1@corp>\r\nX-Test-Read: yes\r\n\r\nтело"
+const ewsMsg = "Subject: hello\r\nFrom: a@b\r\nDate: Wed, 09 Sep 2026 12:00:00 +0000\r\n" +
+	"Message-ID: <ews1@corp>\r\nX-Test-Read: yes\r\n\r\nbody"
 
 func TestEWSListFetchOpen(t *testing.T) {
 	srv := ewstest.New(t, map[string]string{"i-1": ewsMsg})
@@ -54,11 +54,11 @@ func TestEWSListFetchOpen(t *testing.T) {
 		t.Errorf("meta.ID = %q", m.ID)
 	}
 	if !slices.Contains(m.Flags, `\Seen`) {
-		t.Errorf("IsRead=true не дал \\Seen: %v", m.Flags)
+		t.Errorf("IsRead=true did not yield \\Seen: %v", m.Flags)
 	}
 	hm, _ := mail.ReadMessage(bytes.NewReader(m.Header))
 	if hm.Header.Get("Message-Id") != "<ews1@corp>" {
-		t.Errorf("Message-ID не восстановился: %q", hm.Header.Get("Message-Id"))
+		t.Errorf("Message-ID not reconstructed: %q", hm.Header.Get("Message-Id"))
 	}
 
 	lit, err := ep.Open("i-1")
@@ -67,7 +67,7 @@ func TestEWSListFetchOpen(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(lit)
 	if string(raw) != ewsMsg {
-		t.Errorf("Open вернул не то тело:\n%q", raw)
+		t.Errorf("Open returned the wrong body:\n%q", raw)
 	}
 	if srv.LastImp != "ivanov@corp.ru" {
 		t.Errorf("ExchangeImpersonation = %q", srv.LastImp)
@@ -87,12 +87,12 @@ func TestEWSAppendRoundTrip(t *testing.T) {
 		t.Fatalf("Append => %q %v", id, err)
 	}
 	if srv.Count() != 1 {
-		t.Fatalf("на сервере %d писем", srv.Count())
+		t.Fatalf("server has %d messages", srv.Count())
 	}
 
 	ids, _ := ep.ListIDs()
 	if len(ids) != 1 || ids[0] != id {
-		t.Errorf("после Append ListIDs = %v (id %s)", ids, id)
+		t.Errorf("after Append ListIDs = %v (id %s)", ids, id)
 	}
 	lit, err := ep.Open(id)
 	if err != nil {
@@ -100,10 +100,10 @@ func TestEWSAppendRoundTrip(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(lit)
 	if string(raw) != ewsMsg {
-		t.Errorf("прочитали не то, что записали:\n%q", raw)
+		t.Errorf("read back something other than what was written:\n%q", raw)
 	}
 	if !strings.Contains(id, "==") {
-		t.Errorf("ID не похож на EWS ItemId: %q", id)
+		t.Errorf("ID does not look like an EWS ItemId: %q", id)
 	}
 }
 

@@ -31,11 +31,11 @@ func seedMaildir(t *testing.T, root, subject, msgID string) {
 	t.Helper()
 	name := fmt.Sprintf("%d.seed.host", time.Now().UnixNano())
 	body := fmt.Sprintf("Subject: %s\r\nFrom: a@b\r\nDate: Wed, 09 Sep 2026 12:00:00 +0000\r\n"+
-		"Message-ID: <%s>\r\n\r\nтело", subject, msgID)
+		"Message-ID: <%s>\r\n\r\nbody", subject, msgID)
 	if err := os.WriteFile(filepath.Join(root, "new", name), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Millisecond) // уникальность имён по времени
+	time.Sleep(time.Millisecond) // keep filenames unique by time
 }
 
 func maildirMsgIDs(t *testing.T, root string) []string {
@@ -71,10 +71,10 @@ func maildirMsgIDs(t *testing.T, root string) []string {
 func TestSyncUserMaildirToMaildir(t *testing.T) {
 	rootA := makeMaildir(t)
 	rootB := makeMaildir(t)
-	seedMaildir(t, rootA, "только на A", "only-a@corp")
-	seedMaildir(t, rootB, "только на B", "only-b@corp")
-	seedMaildir(t, rootA, "общее", "shared@corp")
-	seedMaildir(t, rootB, "общее", "shared@corp")
+	seedMaildir(t, rootA, "only on A", "only-a@corp")
+	seedMaildir(t, rootB, "only on B", "only-b@corp")
+	seedMaildir(t, rootA, "shared", "shared@corp")
+	seedMaildir(t, rootB, "shared", "shared@corp")
 
 	cfg := &config.Config{
 		ServerA:        config.Server{Type: config.EndpointMaildir, Root: rootA},
@@ -90,32 +90,32 @@ func TestSyncUserMaildirToMaildir(t *testing.T) {
 
 	want := []string{"only-a@corp", "only-b@corp", "shared@corp"}
 	if got := maildirMsgIDs(t, rootA); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("A = %v, ожидали %v", got, want)
+		t.Errorf("A = %v, expected %v", got, want)
 	}
 	if got := maildirMsgIDs(t, rootB); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("B = %v, ожидали %v", got, want)
+		t.Errorf("B = %v, expected %v", got, want)
 	}
 
 	rep := coll.Snapshot()
 	if rep.Total.CopiedAToB != 1 || rep.Total.CopiedBToA != 1 || rep.Total.Errors != 0 {
-		t.Errorf("счётчики: %+v (%+v)", rep.Total, rep.Users)
+		t.Errorf("counters: %+v (%+v)", rep.Total, rep.Users)
 	}
 
-	// идемпотентность
+	// idempotency
 	c2 := stats.New()
 	c2.BeginCycle()
 	New(cfg, c2, t.Logf).SyncUser(context.Background(), config.User{Name: "u", UserA: "u", UserB: "u"})
 	if r := c2.Snapshot(); r.Total.CopiedAToB != 0 || r.Total.CopiedBToA != 0 {
-		t.Errorf("второй прогон скопировал лишнее: %+v", r.Total)
+		t.Errorf("the second run copied extra: %+v", r.Total)
 	}
 }
 
 func TestSyncUserIMAPToMaildir(t *testing.T) {
 	cert := selfSignedCert(t)
-	srvA := startIMAP(t, cert)                     // IMAP: INBOX с исходным письмом + our own
-	appendMsg(t, srvA, "с IMAP", "imap-side@corp") //
-	rootB := makeMaildir(t)                        // Maildir
-	seedMaildir(t, rootB, "с maildir", "mdir-side@corp")
+	srvA := startIMAP(t, cert) // IMAP: INBOX with its original message + our own
+	appendMsg(t, srvA, "from IMAP", "imap-side@corp")
+	rootB := makeMaildir(t) // Maildir
+	seedMaildir(t, rootB, "from maildir", "mdir-side@corp")
 
 	cfg := &config.Config{
 		ServerA:        srvA,
@@ -132,23 +132,23 @@ func TestSyncUserIMAPToMaildir(t *testing.T) {
 	New(cfg, coll, t.Logf).SyncUser(context.Background(), config.User{Name: "u", UserA: "username", UserB: "u"})
 
 	if r := coll.Snapshot(); r.Total.Errors != 0 {
-		t.Fatalf("ошибки при IMAP<->Maildir: %+v", r.Users)
+		t.Fatalf("errors during IMAP<->Maildir: %+v", r.Users)
 	}
-	// на maildir-стороне теперь письмо из IMAP (+ исходное maildir + перенесённое
-	// исходное IMAP-письмо <0000000@localhost/>)
+	// the maildir side now has the IMAP message (+ the original maildir one +
+	// the transferred original IMAP message <0000000@localhost/>)
 	want := []string{"0000000@localhost/", "imap-side@corp", "mdir-side@corp"}
 	if got := maildirMsgIDs(t, rootB); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("Maildir B = %v, ожидали %v", got, want)
+		t.Errorf("Maildir B = %v, expected %v", got, want)
 	}
 	if got := inboxMessageIDs(t, srvA); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("IMAP A = %v, ожидали %v", got, want)
+		t.Errorf("IMAP A = %v, expected %v", got, want)
 	}
 }
 
 func TestSyncUserMaildirIncremental(t *testing.T) {
 	rootA := makeMaildir(t)
 	rootB := makeMaildir(t)
-	seedMaildir(t, rootA, "инкр", "inc-a@corp")
+	seedMaildir(t, rootA, "inc", "inc-a@corp")
 
 	st, err := store.Open(t.TempDir() + "/state.db")
 	if err != nil {
@@ -171,24 +171,24 @@ func TestSyncUserMaildirIncremental(t *testing.T) {
 	c1.BeginCycle()
 	NewWithState(cfg, c1, t.Logf, st).SyncUser(context.Background(), usr)
 	if r := c1.Snapshot(); r.Total.CopiedAToB != 1 || r.Total.Errors != 0 {
-		t.Fatalf("цикл 1: %+v", r.Total)
+		t.Fatalf("cycle 1: %+v", r.Total)
 	}
 
 	pair := store.PairKey("INBOX", "INBOX")
 	ep, msgs, err := st.LoadEndpoint("u", pair, "a")
 	if err != nil || !ep.Exists || len(msgs) != 1 {
-		t.Fatalf("кэш A: %+v msgs=%d err=%v", ep, len(msgs), err)
+		t.Fatalf("cache A: %+v msgs=%d err=%v", ep, len(msgs), err)
 	}
 
-	// добавляем письмо на B, второй цикл должен его подхватить
-	seedMaildir(t, rootB, "новое на B", "new-b@corp")
+	// add a message on B; the second cycle must pick it up
+	seedMaildir(t, rootB, "new on B", "new-b@corp")
 	c2 := stats.New()
 	c2.BeginCycle()
 	NewWithState(cfg, c2, t.Logf, st).SyncUser(context.Background(), usr)
 	if r := c2.Snapshot(); r.Total.CopiedBToA != 1 || r.Total.CopiedAToB != 0 {
-		t.Errorf("цикл 2: %+v", r.Total)
+		t.Errorf("cycle 2: %+v", r.Total)
 	}
 	if got := maildirMsgIDs(t, rootA); fmt.Sprint(got) != fmt.Sprint([]string{"inc-a@corp", "new-b@corp"}) {
-		t.Errorf("A после цикла 2 = %v", got)
+		t.Errorf("A after cycle 2 = %v", got)
 	}
 }

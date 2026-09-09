@@ -29,11 +29,11 @@ func TestFilterFlags(t *testing.T) {
 	got := filterFlags(in)
 	want := []string{`\Seen`, `\Flagged`}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("filterFlags(%v) = %v, ожидали %v", in, got, want)
+		t.Errorf("filterFlags(%v) = %v, expected %v", in, got, want)
 	}
 }
 
-// selfSignedCert - самоподписанный сертификат для тестового TLS-сервера.
+// selfSignedCert - a self-signed certificate for the test TLS server.
 func selfSignedCert(t *testing.T) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -57,8 +57,8 @@ func selfSignedCert(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
-// startIMAP поднимает in-memory IMAP-сервер поверх TLS и возвращает его
-// координаты как config.Server (мастер = username/password из memory-бэкенда).
+// startIMAP starts an in-memory IMAP server over TLS and returns its address as
+// a config.Server (master = username/password from the memory backend).
 func startIMAP(t *testing.T, cert tls.Certificate) config.Server {
 	t.Helper()
 	be := memory.New()
@@ -80,7 +80,7 @@ func startIMAP(t *testing.T, cert tls.Certificate) config.Server {
 	return config.Server{Host: "127.0.0.1", Port: port, MasterUser: "username", MasterPass: "password"}
 }
 
-// appendMsg дописывает письмо в INBOX указанного сервера.
+// appendMsg adds a message to the given server's INBOX.
 func appendMsg(t *testing.T, srv config.Server, subject, msgID string) {
 	t.Helper()
 	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true)
@@ -90,13 +90,13 @@ func appendMsg(t *testing.T, srv config.Server, subject, msgID string) {
 	defer cl.Logout()
 
 	body := fmt.Sprintf("From: a@example.org\r\nTo: b@example.org\r\nSubject: %s\r\n"+
-		"Date: Wed, 09 Sep 2026 12:00:00 +0000\r\nMessage-ID: <%s>\r\n\r\nтело", subject, msgID)
+		"Date: Wed, 09 Sep 2026 12:00:00 +0000\r\nMessage-ID: <%s>\r\n\r\nbody", subject, msgID)
 	if err := cl.Append("INBOX", nil, time.Now(), []byte(body)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 }
 
-// inboxMessageIDs возвращает нормализованные Message-ID всех писем в INBOX.
+// inboxMessageIDs returns the normalized Message-IDs of every message in INBOX.
 func inboxMessageIDs(t *testing.T, srv config.Server) []string {
 	t.Helper()
 	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true)
@@ -130,9 +130,9 @@ func TestSyncUserConvergesBothSides(t *testing.T) {
 	srvA := startIMAP(t, cert)
 	srvB := startIMAP(t, cert)
 
-	// Оба бэкенда стартуют с одинаковым письмом <0000000@localhost/>.
-	appendMsg(t, srvA, "только на A", "only-a@corp")
-	appendMsg(t, srvB, "только на B", "only-b@corp")
+	// Both backends start with the same message <0000000@localhost/>.
+	appendMsg(t, srvA, "only on A", "only-a@corp")
+	appendMsg(t, srvB, "only on B", "only-b@corp")
 
 	cfg := &config.Config{
 		ServerA:        srvA,
@@ -151,27 +151,27 @@ func TestSyncUserConvergesBothSides(t *testing.T) {
 
 	want := []string{"0000000@localhost/", "only-a@corp", "only-b@corp"}
 	if got := inboxMessageIDs(t, srvA); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("A после синка = %v, ожидали %v", got, want)
+		t.Errorf("A after sync = %v, expected %v", got, want)
 	}
 	if got := inboxMessageIDs(t, srvB); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("B после синка = %v, ожидали %v", got, want)
+		t.Errorf("B after sync = %v, expected %v", got, want)
 	}
 
 	rep := coll.Snapshot()
 	if rep.Total.CopiedAToB != 1 || rep.Total.CopiedBToA != 1 {
-		t.Errorf("счётчики копирования: A->B=%d B->A=%d, ожидали 1/1", rep.Total.CopiedAToB, rep.Total.CopiedBToA)
+		t.Errorf("copy counters: A->B=%d B->A=%d, expected 1/1", rep.Total.CopiedAToB, rep.Total.CopiedBToA)
 	}
 	if rep.Total.Errors != 0 {
-		t.Errorf("ошибок: %d (%+v)", rep.Total.Errors, rep.Users)
+		t.Errorf("errors: %d (%+v)", rep.Total.Errors, rep.Users)
 	}
 
-	// Идемпотентность: второй прогон ничего не копирует.
+	// Idempotency: the second run copies nothing.
 	coll2 := stats.New()
 	coll2.BeginCycle()
 	New(cfg, coll2, t.Logf).SyncUser(context.Background(), config.User{Name: "u", UserA: "username", UserB: "username"})
 	rep2 := coll2.Snapshot()
 	if rep2.Total.CopiedAToB != 0 || rep2.Total.CopiedBToA != 0 {
-		t.Errorf("второй прогон скопировал лишнее: A->B=%d B->A=%d", rep2.Total.CopiedAToB, rep2.Total.CopiedBToA)
+		t.Errorf("the second run copied extra: A->B=%d B->A=%d", rep2.Total.CopiedAToB, rep2.Total.CopiedBToA)
 	}
 }
 
@@ -187,14 +187,14 @@ func TestSyncUserResolvesFolderCaseInsensitive(t *testing.T) {
 		FetchBatchSize: 10,
 		HashHeader:     "X-Imapsync-Hash",
 		DialTimeout:    config.Duration(5 * time.Second),
-		Folders:        []config.FolderPair{{A: "inbox", B: "InBoX"}}, // не совпадает по регистру с "INBOX"
+		Folders:        []config.FolderPair{{A: "inbox", B: "InBoX"}}, // differs in case from "INBOX"
 	}
 	coll := stats.New()
 	coll.BeginCycle()
 	New(cfg, coll, t.Logf).SyncUser(context.Background(), config.User{Name: "u", UserA: "username", UserB: "username"})
 
 	if r := coll.Snapshot(); r.Total.Errors != 0 {
-		t.Fatalf("ошибки при синке с папкой в другом регистре: %+v", r.Users)
+		t.Fatalf("errors syncing with a differently-cased folder: %+v", r.Users)
 	}
 	if got := inboxMessageIDs(t, srvB); fmt.Sprint(got) != fmt.Sprint([]string{"0000000@localhost/", "ci-a@corp"}) {
 		t.Errorf("B = %v", got)
@@ -205,8 +205,8 @@ func TestSyncUserIncrementalWithCache(t *testing.T) {
 	cert := selfSignedCert(t)
 	srvA := startIMAP(t, cert)
 	srvB := startIMAP(t, cert)
-	appendMsg(t, srvA, "инкр A", "inc-a@corp")
-	appendMsg(t, srvB, "инкр B", "inc-b@corp")
+	appendMsg(t, srvA, "inc A", "inc-a@corp")
+	appendMsg(t, srvB, "inc B", "inc-b@corp")
 
 	st, err := store.Open(t.TempDir() + "/state.db")
 	if err != nil {
@@ -226,47 +226,47 @@ func TestSyncUserIncrementalWithCache(t *testing.T) {
 	}
 	usr := config.User{Name: "u", UserA: "username", UserB: "username"}
 
-	// цикл 1
+	// cycle 1
 	c1 := stats.New()
 	c1.BeginCycle()
 	NewWithState(cfg, c1, t.Logf, st).SyncUser(context.Background(), usr)
 
 	want := []string{"0000000@localhost/", "inc-a@corp", "inc-b@corp"}
 	if got := inboxMessageIDs(t, srvA); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("A = %v, ожидали %v", got, want)
+		t.Errorf("A = %v, expected %v", got, want)
 	}
 	if got := inboxMessageIDs(t, srvB); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("B = %v, ожидали %v", got, want)
+		t.Errorf("B = %v, expected %v", got, want)
 	}
 	if r := c1.Snapshot(); r.Total.CopiedAToB != 1 || r.Total.CopiedBToA != 1 || r.Total.Errors != 0 {
-		t.Fatalf("цикл 1: %+v (%+v)", r.Total, r.Users)
+		t.Fatalf("cycle 1: %+v (%+v)", r.Total, r.Users)
 	}
 
-	// кэш заполнен
+	// cache populated
 	pair := store.PairKey("INBOX", "INBOX")
 	ep, msgs, err := st.LoadEndpoint("u", pair, "a")
 	if err != nil || !ep.Exists || len(msgs) < 2 {
-		t.Fatalf("кэш A: %+v msgs=%d err=%v", ep, len(msgs), err)
+		t.Fatalf("cache A: %+v msgs=%d err=%v", ep, len(msgs), err)
 	}
 
-	// статус записан
+	// status recorded
 	statuses, _ := st.UserStatuses()
 	if s := statuses["u"]; s.Status != "ok" || s.CopiedAToB != 1 || s.LastOK.IsZero() {
 		t.Errorf("user_status: %+v", s)
 	}
 
-	// цикл 2 - ничего не копируется
+	// cycle 2 - nothing is copied
 	c2 := stats.New()
 	c2.BeginCycle()
 	NewWithState(cfg, c2, t.Logf, st).SyncUser(context.Background(), usr)
 	if r := c2.Snapshot(); r.Total.CopiedAToB != 0 || r.Total.CopiedBToA != 0 || r.Total.Errors != 0 {
-		t.Errorf("цикл 2 не идемпотентен: %+v", r.Total)
+		t.Errorf("cycle 2 is not idempotent: %+v", r.Total)
 	}
-	// после цикла 2 в кэше по 3 письма на сторону (добавились скопированные)
+	// after cycle 2 the cache has 3 messages per side (the copied ones were added)
 	_, msgsA2, _ := st.LoadEndpoint("u", pair, "a")
 	_, msgsB2, _ := st.LoadEndpoint("u", pair, "b")
 	if len(msgsA2) != 3 || len(msgsB2) != 3 {
-		t.Errorf("кэш после цикла 2: A=%d B=%d, ожидали 3/3", len(msgsA2), len(msgsB2))
+		t.Errorf("cache after cycle 2: A=%d B=%d, expected 3/3", len(msgsA2), len(msgsB2))
 	}
 }
 
@@ -282,9 +282,9 @@ func TestMaxFailStreakStopsUser(t *testing.T) {
 	}
 	defer st.Close()
 
-	// накапливаем серию ошибок
+	// accumulate an error streak
 	for range 3 {
-		if err := st.RecordRun("u", store.RunResult{At: time.Now(), Status: "error", Errors: 1, LastError: "боль"}); err != nil {
+		if err := st.RecordRun("u", store.RunResult{At: time.Now(), Status: "error", Errors: 1, LastError: "pain"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -305,13 +305,13 @@ func TestMaxFailStreakStopsUser(t *testing.T) {
 	NewWithState(cfg, coll, t.Logf, st).SyncUser(context.Background(), usr)
 
 	if rep := coll.Snapshot(); len(rep.Users) != 0 {
-		t.Fatalf("остановленный юзер всё равно обработан: %+v", rep.Users)
+		t.Fatalf("the stopped user was still processed: %+v", rep.Users)
 	}
-	if got := inboxMessageIDs(t, srvB); len(got) != 1 { // только исходное письмо
-		t.Errorf("B изменился, хотя синк должен быть остановлен: %v", got)
+	if got := inboxMessageIDs(t, srvB); len(got) != 1 { // only the original message
+		t.Errorf("B changed even though sync should be stopped: %v", got)
 	}
 
-	// снимаем стоп
+	// lift the stop
 	if err := st.ResumeUser("u"); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestMaxFailStreakStopsUser(t *testing.T) {
 	coll2.BeginCycle()
 	NewWithState(cfg, coll2, t.Logf, st).SyncUser(context.Background(), usr)
 	if rep := coll2.Snapshot(); len(rep.Users) != 1 || rep.Total.CopiedAToB != 1 {
-		t.Errorf("после resume синк не пошёл: %+v", rep)
+		t.Errorf("sync did not run after resume: %+v", rep)
 	}
 }
 
@@ -344,7 +344,7 @@ func TestIncrementalFullResync(t *testing.T) {
 		Folders:         []config.FolderPair{{A: "INBOX", B: "INBOX"}},
 		StateCache:      true,
 		SQLitePath:      "unused",
-		FullResyncEvery: config.Duration(time.Nanosecond), // каждый цикл
+		FullResyncEvery: config.Duration(time.Nanosecond), // every cycle
 	}
 	usr := config.User{Name: "u", UserA: "username", UserB: "username"}
 	pair := store.PairKey("INBOX", "INBOX")
@@ -354,7 +354,7 @@ func TestIncrementalFullResync(t *testing.T) {
 		c.BeginCycle()
 		NewWithState(cfg, c, t.Logf, st).SyncUser(context.Background(), usr)
 		if r := c.Snapshot(); r.Total.Errors != 0 {
-			t.Fatalf("ошибки: %+v", r.Users)
+			t.Fatalf("errors: %+v", r.Users)
 		}
 	}
 
@@ -365,6 +365,6 @@ func TestIncrementalFullResync(t *testing.T) {
 	ep2, _, _ := st.LoadEndpoint("u", pair, "a")
 
 	if !ep2.FullResyncAt.After(ep1.FullResyncAt) {
-		t.Errorf("full_resync_at не сдвинулся: %v -> %v", ep1.FullResyncAt, ep2.FullResyncAt)
+		t.Errorf("full_resync_at did not advance: %v -> %v", ep1.FullResyncAt, ep2.FullResyncAt)
 	}
 }

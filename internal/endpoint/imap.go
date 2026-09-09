@@ -10,7 +10,7 @@ import (
 	"imapsync/internal/mailbox"
 )
 
-// imapBackend - IMAP-реализация Backend поверх mailbox.Client.
+// imapBackend - the IMAP implementation of Backend on top of mailbox.Client.
 type imapBackend struct {
 	srv         config.Server
 	dialTimeout time.Duration
@@ -33,18 +33,18 @@ func (b *imapBackend) Connect(ctx context.Context, user string) (Endpoint, error
 	return &imapEndpoint{cl: cl, batch: b.fetchBatch}, nil
 }
 
-// imapEndpoint - открытое IMAP-соединение с одной выбранной папкой.
+// imapEndpoint - an open IMAP connection with one selected folder.
 type imapEndpoint struct {
 	cl     *mailbox.Client
 	batch  int
-	folder string // текущая выбранная папка
-	count  uint32 // число писем в ней (для FETCH по порядковым номерам)
+	folder string // currently selected folder
+	count  uint32 // message count in it (for FETCH by sequence number)
 }
 
 func parseUID(id string) (uint32, error) {
 	u, err := strconv.ParseUint(id, 10, 32)
 	if err != nil {
-		return 0, fmt.Errorf("некорректный UID %q: %w", id, err)
+		return 0, fmt.Errorf("invalid UID %q: %w", id, err)
 	}
 	return uint32(u), nil
 }
@@ -123,7 +123,7 @@ func (e *imapEndpoint) Append(flags []string, date time.Time, body Literal) (str
 		return "", err
 	}
 	if uid == 0 {
-		return "", nil // сервер без UIDPLUS
+		return "", nil // server without UIDPLUS
 	}
 	return uidStr(uid), nil
 }

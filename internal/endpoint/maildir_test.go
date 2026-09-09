@@ -44,19 +44,19 @@ func TestMaildirAppendListFetchOpen(t *testing.T) {
 		t.Errorf("Select => %q %q", folder, validity)
 	}
 
-	body := "Subject: привет\r\nFrom: a@b\r\nMessage-ID: <m1@corp>\r\n\r\nтело"
+	body := "Subject: hello\r\nFrom: a@b\r\nMessage-ID: <m1@corp>\r\n\r\nbody"
 	when := time.Unix(1_700_000_000, 0)
 	id, err := ep.Append([]string{`\Seen`, `\Flagged`}, when, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id == "" {
-		t.Fatal("Append не вернул ID")
+		t.Fatal("Append returned no ID")
 	}
 
 	ids, err := ep.ListIDs()
 	if err != nil || len(ids) != 1 || ids[0] != id {
-		t.Fatalf("ListIDs => %v (err %v), ожидали [%s]", ids, err, id)
+		t.Fatalf("ListIDs => %v (err %v), expected [%s]", ids, err, id)
 	}
 
 	metas, err := ep.FetchMeta(nil)
@@ -68,12 +68,12 @@ func TestMaildirAppendListFetchOpen(t *testing.T) {
 		t.Errorf("meta.ID = %q", m.ID)
 	}
 	if got := fmtFlags(m.Flags); got != `\Flagged \Seen` && got != `\Seen \Flagged` {
-		t.Errorf("флаги не прочитались из имени файла: %v", m.Flags)
+		t.Errorf("flags not read from the filename: %v", m.Flags)
 	}
 	if !m.InternalDate.Equal(when) {
-		t.Errorf("InternalDate = %v, ожидали %v (mtime)", m.InternalDate, when)
+		t.Errorf("InternalDate = %v, expected %v (mtime)", m.InternalDate, when)
 	}
-	if !bytes.HasPrefix(m.Header, []byte("Subject: привет")) {
+	if !bytes.HasPrefix(m.Header, []byte("Subject: hello")) {
 		t.Errorf("header: %q", m.Header)
 	}
 
@@ -83,7 +83,7 @@ func TestMaildirAppendListFetchOpen(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(lit)
 	if string(raw) != body {
-		t.Errorf("Open вернул не то тело:\n%q", raw)
+		t.Errorf("Open returned the wrong body:\n%q", raw)
 	}
 }
 
@@ -104,11 +104,11 @@ func TestMaildirSelectCreatesSubfolder(t *testing.T) {
 	}
 	for _, s := range []string{"tmp", "new", "cur"} {
 		if !isDir(filepath.Join(root, ".Sent", s)) {
-			t.Errorf(".Sent/%s не создан", s)
+			t.Errorf(".Sent/%s not created", s)
 		}
 	}
 
-	// SPECIAL-USE токен резолвится в ту же .Sent
+	// the SPECIAL-USE token resolves to the same .Sent
 	f2, _, err := ep.Select(`\Sent`)
 	if err != nil || f2 != "Sent" {
 		t.Errorf(`Select("\\Sent") => %q %v`, f2, err)
@@ -126,20 +126,20 @@ func TestMaildirNoFlagsGoesToNew(t *testing.T) {
 	}
 	ents, _ := os.ReadDir(filepath.Join(root, "new"))
 	if len(ents) != 1 {
-		t.Errorf("письмо без флагов должно быть в new/, там %d файлов", len(ents))
+		t.Errorf("a message without flags must be in new/, found %d files there", len(ents))
 	}
 }
 
 func TestFlagRoundTrip(t *testing.T) {
 	if s := flagSuffix([]string{`\Seen`, `\Answered`, `\Draft`}); s != ":2,DRS" {
-		t.Errorf("flagSuffix => %q, ожидали :2,DRS (сортировано)", s)
+		t.Errorf("flagSuffix => %q, expected :2,DRS (sorted)", s)
 	}
 	got := flagsFromName("123.host:2,FS")
 	if fmtFlags(got) != `\Flagged \Seen` {
 		t.Errorf("flagsFromName => %v", got)
 	}
 	if flagSuffix(nil) != "" {
-		t.Error("пустые флаги => пустой суффикс")
+		t.Error("empty flags => empty suffix")
 	}
 }
 
@@ -152,11 +152,11 @@ func TestExpandUser(t *testing.T) {
 	}
 	for tmpl, want := range cases {
 		if got := expandUser(tmpl, "ivanov@corp.ru"); got != want {
-			t.Errorf("expandUser(%q) = %q, ожидали %q", tmpl, got, want)
+			t.Errorf("expandUser(%q) = %q, expected %q", tmpl, got, want)
 		}
 	}
 	if got := expandUser("/home/%n/M", "plainuser"); got != "/home/plainuser/M" {
-		t.Errorf("без @: %q", got)
+		t.Errorf("without @: %q", got)
 	}
 }
 

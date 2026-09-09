@@ -1,6 +1,6 @@
-// Package store - локальная БД SQLite с парами папок и пользователей.
-// Используется как альтернативный источник конфигурации (source: sqlite),
-// чтобы не держать большие списки в YAML.
+// Package store is a local SQLite DB holding folder pairs and users. It is used
+// as an alternative config source (source: sqlite) so large lists don't have to
+// live in YAML.
 package store
 
 import (
@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "modernc.org/sqlite" // драйвер "sqlite" (чистый Go, без CGO)
+	_ "modernc.org/sqlite" // "sqlite" driver (pure Go, no CGO)
 
 	"imapsync/config"
 )
@@ -32,17 +32,17 @@ CREATE TABLE IF NOT EXISTS users (
 );
 `
 
-// Store - открытая БД.
+// Store is an open DB.
 type Store struct {
 	db   *sql.DB
-	lock *os.File // != nil при OpenExclusive; держит flock до Close
+	lock *os.File // != nil with OpenExclusive; holds the flock until Close
 }
 
-// poolSize - размер пула соединений к БД. WAL допускает конкурентное чтение;
-// запись сериализуется через busy_timeout, а не через единственное соединение.
+// poolSize is the DB connection pool size. WAL allows concurrent reads; writes
+// are serialized via busy_timeout, not via a single connection.
 const poolSize = 8
 
-// dsn собирает строку подключения с прагмами, применяемыми к каждому соединению.
+// dsn builds the connection string with pragmas applied to every connection.
 func dsn(path string) string {
 	q := url.Values{}
 	q.Add("_pragma", "busy_timeout(10000)")
@@ -52,14 +52,14 @@ func dsn(path string) string {
 	return "file:" + path + "?" + q.Encode()
 }
 
-// Open открывает (создавая при необходимости) БД по пути path и применяет схему.
+// Open opens (creating if needed) the DB at path and applies the schema.
 func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, errors.New("путь к sqlite не задан")
+		return nil, errors.New("sqlite path not set")
 	}
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
-		return nil, fmt.Errorf("открытие sqlite %s: %w", path, err)
+		return nil, fmt.Errorf("opening sqlite %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(poolSize)
 	db.SetMaxIdleConns(poolSize)
@@ -67,22 +67,22 @@ func Open(path string) (*Store, error) {
 
 	if err := migrateState(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("миграция sqlite %s: %w", path, err)
+		return nil, fmt.Errorf("migrating sqlite %s: %w", path, err)
 	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("создание схемы sqlite %s: %w", path, err)
+		return nil, fmt.Errorf("creating sqlite schema %s: %w", path, err)
 	}
 	if _, err := db.Exec(stateSchema); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("создание схемы кэша состояния sqlite %s: %w", path, err)
+		return nil, fmt.Errorf("creating sqlite state-cache schema %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
 }
 
-// migrateState приводит state-таблицы кэша к schemaVersion. Кэш (sync_endpoint /
-// sync_msg_cache) при несовпадении версии пересоздаётся - это допустимо, полный
-// пере-скан его восстановит. user_status / user_run не трогаем.
+// migrateState brings the state-cache tables up to schemaVersion. On a version
+// mismatch the cache (sync_endpoint / sync_msg_cache) is recreated - that is
+// acceptable, a full rescan restores it. user_status / user_run are left alone.
 func migrateState(db *sql.DB) error {
 	var uv int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&uv); err != nil {
@@ -94,14 +94,14 @@ func migrateState(db *sql.DB) error {
 	if _, err := db.Exec(`DROP TABLE IF EXISTS sync_endpoint; DROP TABLE IF EXISTS sync_msg_cache;`); err != nil {
 		return err
 	}
-	// PRAGMA не принимает плейсхолдеры.
+	// PRAGMA does not accept placeholders.
 	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
 		return err
 	}
 	return nil
 }
 
-// Close закрывает БД и снимает advisory-блокировку, если она бралась.
+// Close closes the DB and releases the advisory lock if one was taken.
 func (s *Store) Close() error {
 	err := s.db.Close()
 	if s.lock != nil {
@@ -112,13 +112,13 @@ func (s *Store) Close() error {
 	return err
 }
 
-// UpsertUser добавляет или обновляет пользователя по имени.
+// UpsertUser inserts or updates a user by name.
 func (s *Store) UpsertUser(u config.User, enabled bool) error {
 	name := strings.TrimSpace(u.Name)
 	a := strings.TrimSpace(u.UserA)
 	b := strings.TrimSpace(u.UserB)
 	if name == "" || a == "" || b == "" {
-		return fmt.Errorf("пользователь: пустое поле (name=%q user_a=%q user_b=%q)", name, a, b)
+		return fmt.Errorf("user: empty field (name=%q user_a=%q user_b=%q)", name, a, b)
 	}
 	en := 0
 	if enabled {
@@ -129,26 +129,26 @@ func (s *Store) UpsertUser(u config.User, enabled bool) error {
 		ON CONFLICT(name) DO UPDATE SET user_a=excluded.user_a, user_b=excluded.user_b, enabled=excluded.enabled`,
 		name, a, b, en)
 	if err != nil {
-		return fmt.Errorf("upsert пользователя %q: %w", name, err)
+		return fmt.Errorf("upserting user %q: %w", name, err)
 	}
 	return nil
 }
 
-// UpsertFolderPair добавляет пару папок (без дублей).
+// UpsertFolderPair adds a folder pair (no duplicates).
 func (s *Store) UpsertFolderPair(fp config.FolderPair) error {
 	a := strings.TrimSpace(fp.A)
 	b := strings.TrimSpace(fp.B)
 	if a == "" || b == "" {
-		return fmt.Errorf("пара папок: пустое имя (a=%q b=%q)", a, b)
+		return fmt.Errorf("folder pair: empty name (a=%q b=%q)", a, b)
 	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO folder_pairs (folder_a, folder_b) VALUES (?, ?)`, a, b)
 	if err != nil {
-		return fmt.Errorf("вставка пары папок %q/%q: %w", a, b, err)
+		return fmt.Errorf("inserting folder pair %q/%q: %w", a, b, err)
 	}
 	return nil
 }
 
-// SetUserEnabled включает/выключает пользователя.
+// SetUserEnabled enables/disables a user.
 func (s *Store) SetUserEnabled(name string, enabled bool) error {
 	en := 0
 	if enabled {
@@ -156,20 +156,20 @@ func (s *Store) SetUserEnabled(name string, enabled bool) error {
 	}
 	res, err := s.db.Exec(`UPDATE users SET enabled=? WHERE name=?`, en, strings.TrimSpace(name))
 	if err != nil {
-		return fmt.Errorf("смена enabled для %q: %w", name, err)
+		return fmt.Errorf("changing enabled for %q: %w", name, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("пользователь %q не найден", name)
+		return fmt.Errorf("user %q not found", name)
 	}
 	return nil
 }
 
-// ListUsers возвращает включённых пользователей (для запуска демона).
+// ListUsers returns the enabled users (for running the daemon).
 func (s *Store) ListUsers() ([]config.User, error) {
 	return s.queryUsers(true)
 }
 
-// AllUsers возвращает всех пользователей (для вывода списка).
+// AllUsers returns all users (for listing).
 func (s *Store) AllUsers() ([]config.User, error) {
 	return s.queryUsers(false)
 }
@@ -182,7 +182,7 @@ func (s *Store) queryUsers(onlyEnabled bool) ([]config.User, error) {
 	q += ` ORDER BY name`
 	rows, err := s.db.Query(q)
 	if err != nil {
-		return nil, fmt.Errorf("выборка пользователей: %w", err)
+		return nil, fmt.Errorf("selecting users: %w", err)
 	}
 	defer rows.Close()
 
@@ -190,18 +190,18 @@ func (s *Store) queryUsers(onlyEnabled bool) ([]config.User, error) {
 	for rows.Next() {
 		var u config.User
 		if err := rows.Scan(&u.Name, &u.UserA, &u.UserB); err != nil {
-			return nil, fmt.Errorf("чтение строки пользователя: %w", err)
+			return nil, fmt.Errorf("reading user row: %w", err)
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
 }
 
-// ListFolderPairs возвращает все пары папок.
+// ListFolderPairs returns all folder pairs.
 func (s *Store) ListFolderPairs() ([]config.FolderPair, error) {
 	rows, err := s.db.Query(`SELECT folder_a, folder_b FROM folder_pairs ORDER BY folder_a, folder_b`)
 	if err != nil {
-		return nil, fmt.Errorf("выборка пар папок: %w", err)
+		return nil, fmt.Errorf("selecting folder pairs: %w", err)
 	}
 	defer rows.Close()
 
@@ -209,14 +209,14 @@ func (s *Store) ListFolderPairs() ([]config.FolderPair, error) {
 	for rows.Next() {
 		var fp config.FolderPair
 		if err := rows.Scan(&fp.A, &fp.B); err != nil {
-			return nil, fmt.Errorf("чтение строки пары папок: %w", err)
+			return nil, fmt.Errorf("reading folder pair row: %w", err)
 		}
 		out = append(out, fp)
 	}
 	return out, rows.Err()
 }
 
-// LoadInto заполняет cfg.Users и cfg.Folders из БД.
+// LoadInto populates cfg.Users and cfg.Folders from the DB.
 func (s *Store) LoadInto(cfg *config.Config) error {
 	users, err := s.ListUsers()
 	if err != nil {
@@ -231,8 +231,8 @@ func (s *Store) LoadInto(cfg *config.Config) error {
 	return nil
 }
 
-// ImportConfig переносит в БД все пары папок и всех юзеров из cfg.
-// Возвращает число обработанных папок и юзеров.
+// ImportConfig moves all folder pairs and all users from cfg into the DB.
+// Returns the number of folders and users processed.
 func (s *Store) ImportConfig(cfg *config.Config) (folders, users int, err error) {
 	for _, fp := range cfg.Folders {
 		if err = s.UpsertFolderPair(fp); err != nil {

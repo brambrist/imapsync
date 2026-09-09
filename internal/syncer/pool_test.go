@@ -13,7 +13,7 @@ import (
 	"imapsync/internal/store"
 )
 
-// fakeSyncer считает вызовы и следит за максимальной параллельностью.
+// fakeSyncer counts calls and tracks the maximum concurrency.
 type fakeSyncer struct {
 	mu       sync.Mutex
 	seen     map[string]int
@@ -70,15 +70,15 @@ func TestRunCycleProcessesAllUsersWithinWorkerLimit(t *testing.T) {
 	p.RunCycle(context.Background())
 
 	if len(fs.seen) != 5 {
-		t.Fatalf("обработано юзеров: %d, ожидали 5 (%v)", len(fs.seen), fs.seen)
+		t.Fatalf("users processed: %d, expected 5 (%v)", len(fs.seen), fs.seen)
 	}
 	for name, c := range fs.seen {
 		if c != 1 {
-			t.Errorf("юзер %s обработан %d раз", name, c)
+			t.Errorf("user %s processed %d times", name, c)
 		}
 	}
 	if fs.max > 2 {
-		t.Errorf("параллельность %d превысила workers=2", fs.max)
+		t.Errorf("concurrency %d exceeded workers=2", fs.max)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestWorkersCappedAtUserCount(t *testing.T) {
 	cfg := &config.Config{Users: mkUsers(3), Workers: 10, PerUserTimeout: config.Duration(time.Minute)}
 	p, _ := newTestPool(cfg, newFake(0))
 	if got := p.workers(); got != 3 {
-		t.Errorf("workers() = %d, ожидали 3", got)
+		t.Errorf("workers() = %d, expected 3", got)
 	}
 }
 
@@ -105,24 +105,24 @@ func TestRunCycleStopsOnContextCancel(t *testing.T) {
 	start := time.Now()
 	p.RunCycle(ctx)
 	if time.Since(start) > 500*time.Millisecond {
-		t.Errorf("RunCycle не остановился быстро после cancel: %s", time.Since(start))
+		t.Errorf("RunCycle did not stop quickly after cancel: %s", time.Since(start))
 	}
 
 	fs.mu.Lock()
 	processed := len(fs.seen)
 	fs.mu.Unlock()
 	if processed == 20 {
-		t.Errorf("после отмены обработаны все 20 юзеров - отмена не сработала")
+		t.Errorf("all 20 users processed after cancel - cancellation did not work")
 	}
 }
 
-// end-to-end: пул с настоящим Syncer против двух in-memory IMAP-серверов.
+// end-to-end: the pool with a real Syncer against two in-memory IMAP servers.
 func TestPoolRunConvergesRealServers(t *testing.T) {
 	cert := selfSignedCert(t)
 	srvA := startIMAP(t, cert)
 	srvB := startIMAP(t, cert)
-	appendMsg(t, srvA, "на A", "pool-a@corp")
-	appendMsg(t, srvB, "на B", "pool-b@corp")
+	appendMsg(t, srvA, "on A", "pool-a@corp")
+	appendMsg(t, srvB, "on B", "pool-b@corp")
 
 	cfg := &config.Config{
 		ServerA: srvA, ServerB: srvB,
@@ -143,18 +143,18 @@ func TestPoolRunConvergesRealServers(t *testing.T) {
 	coll := stats.New()
 	pool := NewPool(cfg, coll, func(string, ...any) {}, nil)
 
-	// один полный цикл без отмены - все юзеры должны отработать целиком
+	// one full cycle without cancellation - all users must run to completion
 	pool.RunCycle(context.Background())
 
 	want := []string{"0000000@localhost/", "pool-a@corp", "pool-b@corp"}
 	if got := inboxMessageIDs(t, srvA); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("A = %v, ожидали %v", got, want)
+		t.Errorf("A = %v, expected %v", got, want)
 	}
 	if got := inboxMessageIDs(t, srvB); fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("B = %v, ожидали %v", got, want)
+		t.Errorf("B = %v, expected %v", got, want)
 	}
 	if rep := coll.Snapshot(); rep.Total.Errors != 0 {
-		t.Errorf("ошибок в последнем цикле: %d (%+v)", rep.Total.Errors, rep.Users)
+		t.Errorf("errors in the last cycle: %d (%+v)", rep.Total.Errors, rep.Users)
 	}
 }
 
@@ -179,27 +179,27 @@ func TestReloadPicksUpDBChanges(t *testing.T) {
 	p, _ := newTestPool(cfg, fs)
 	p.reloadSrc = st
 
-	// первый цикл вручную
+	// first cycle manually
 	p.reload()
 	if len(cfg.Users) != 2 {
-		t.Fatalf("после reload юзеров %d, ожидали 2", len(cfg.Users))
+		t.Fatalf("after reload users %d, expected 2", len(cfg.Users))
 	}
 	p.RunCycle(context.Background())
 
-	// добавляем юзера в БД и выключаем одного
+	// add a user to the DB and disable one
 	_ = st.UpsertUser(config.User{Name: "c", UserA: "x", UserB: "y"}, true)
 	_ = st.SetUserEnabled("b", false)
 
 	p.reload()
 	if len(cfg.Users) != 2 {
-		t.Fatalf("после второго reload юзеров %d (a,c), ожидали 2", len(cfg.Users))
+		t.Fatalf("after the second reload users %d (a,c), expected 2", len(cfg.Users))
 	}
 	names := map[string]bool{}
 	for _, u := range cfg.Users {
 		names[u.Name] = true
 	}
 	if !names["a"] || !names["c"] || names["b"] {
-		t.Errorf("состав юзеров после reload: %v", names)
+		t.Errorf("user set after reload: %v", names)
 	}
 }
 
@@ -224,7 +224,7 @@ func TestRunLoopsUntilCancel(t *testing.T) {
 		total += c
 	}
 	fs.mu.Unlock()
-	if total < 6 { // минимум два цикла по 3 юзера
-		t.Errorf("за время работы обработано %d (юзер*цикл), ожидали >= 6", total)
+	if total < 6 { // at least two cycles of 3 users
+		t.Errorf("processed %d (user*cycle) during the run, expected >= 6", total)
 	}
 }

@@ -1,254 +1,182 @@
-# IMAP Sync — двусторонний синхронизатор ящиков
+# imapsync — two-way mailbox synchronizer
 
-## Что это
+## What it is
 
-CLI-демон на Go для **двусторонней** синхронизации почтовых папок между двумя
-IMAP-серверами. Основной сценарий — синк папки Sent (Отправленные) между двумя
-инсталляциями почты, где один и тот же пользователь имеет ящики на обоих серверах.
+A Go CLI daemon for **two-way** synchronization of mail folders between two
+endpoints. The main scenario is syncing the Sent folder between two mail
+installations where the same user has mailboxes on both.
 
-Пишем инкрементально через Claude Code, компилируем и тестируем по ходу.
-Стиль: инкрементальные правки, а не переписывание целиком. Дефисы, не длинные тире.
+Built incrementally via Claude Code, compiled and tested as we go.
+Style: incremental edits, not wholesale rewrites. Hyphens, not em dashes.
 
-## Требования (согласованы)
+## Requirements (agreed)
 
-- **Язык:** Go
-- **IMAP-библиотека:** `github.com/emersion/go-imap` **v1** (стабильная ветка v1.2.x,
-  НЕ v2). Для разбора писем — `github.com/emersion/go-message`.
-- **Направление синка:** двусторонний, но **только копирование недостающих писем**
-  (append). Флаги (прочитано/удалено) и удаления НЕ синхронизируем — только
-  дописываем на каждую сторону письма, которых на ней нет.
-- **Многопоточность:** worker-pool. **Число воркеров МЕНЬШЕ числа пользователей**
-  (потоков меньше, чем юзеров) — воркеры разбирают юзеров из очереди. Один юзер
-  обрабатывается одним воркером целиком (не дробим юзера между потоками).
-- **Многопользовательность:** **мастер-доступ** — одна сервисная УЗ (master user)
-  на каждом сервере имперсонирует целевых пользователей. Логин имперсонации
-  задаётся шаблоном (по умолчанию Dovecot-стиль `{user}*{master}`, пароль —
-  мастера).
-- **Логирование:**
-  - ошибки — по мере возникновения, с контекстом (юзер, папка, сервер);
-  - периодическая **сводная статистика по всем юзерам** (раз в StatsInterval);
-  - статистика по **текущему обрабатываемому** юзеру (сколько скопировано в
-    каждую сторону, сколько пропущено как дубли, ошибки).
+- **Language:** Go
+- **IMAP library:** `github.com/emersion/go-imap` **v1** (the stable v1.2.x
+  branch, NOT v2). For message parsing - `github.com/emersion/go-message`.
+- **Sync direction:** two-way, but **copy missing messages only** (append). Flags
+  (read/deleted) and deletions are NOT synced - we only append to each side the
+  messages it lacks.
+- **Concurrency:** a worker pool. **Fewer workers than users** - workers pull
+  users from a queue. One user is processed by one worker end to end (a user is
+  not split across workers).
+- **Multi-user:** **master access** - one service account (master user) per
+  server impersonates the target users. IMAP impersonation is SASL PLAIN with
+  authzid (authcid+password are the master's, authzid is the target user).
+- **Logging:**
+  - errors - as they happen, with context (user, folder, server);
+  - a periodic **summary over all users** (every StatsInterval);
+  - per-user stats for the **currently processed** user (how many copied each
+    way, how many skipped as duplicates, errors).
 
-## Ключевая логика дедупликации (важно, особенность Exchange)
+## Key deduplication logic (important, an Exchange quirk)
 
-Письма нельзя сравнивать только по `Message-ID`, потому что:
-1. `Message-ID` может **отсутствовать**;
-2. на Exchange `Message-ID` может **появиться позже** (не сразу после появления
-   письма в папке) — то есть на одной стороне он уже есть, на другой того же
-   письма ещё нет или без ID.
+Messages cannot be compared by `Message-ID` alone because:
+1. `Message-ID` may be **absent**;
+2. on Exchange `Message-ID` may **appear later** (not right after the message
+   shows up in the folder) - so one side already has it while the other does not
+   have that message yet, or has it without an ID.
 
-Алгоритм идентичности письма:
-1. Если у письма есть `Message-ID` — сравниваем по нему (нормализованному).
-2. Если `Message-ID` нет — вычисляем **суррогатный ключ**: хеш от значимых полей.
-   Предложенный состав: **дата отправки (Date) + Subject** (можно расширить From/To
-   при коллизиях). Хеш пишем в **отдельный кастомный заголовок** на "той" стороне
-   при append (например `X-Imapsync-Hash: <hex>`), чтобы при следующих проходах
-   находить уже скопированное письмо по этому заголовку, а не пересчитывать.
-3. Итоговый индекс письма для сравнения: `Message-ID` (если есть) ИЛИ значение
-   `X-Imapsync-Hash` (если проставляли) ИЛИ вычисленный суррогатный хеш.
+Message identity algorithm:
+1. If the message has a `Message-ID` - compare by it (normalized).
+2. If there is no `Message-ID` - compute a **surrogate key**: a hash of the
+   significant fields: `Date (UTC unix) + Subject (trimmed, as is) + From
+   (normalized address)`. The hash is written into a **separate custom header**
+   on the target side on append (`X-Imapsync-Hash: <hex>`) so later passes find
+   the already-copied message by that header instead of recomputing.
+3. The final match set for a message: `Message-ID` (if present), the
+   `X-Imapsync-Hash` value (if we set it), and the always-computed surrogate
+   hash. Two messages are identical if any pair of keys matches.
 
-Это защищает от:
-- дублей при отсутствии Message-ID;
-- повторного копирования, когда Message-ID появился позже (суррогатный хеш
-  остаётся стабильным и уже записан в заголовок на целевой стороне).
+This guards against:
+- duplicates when there is no Message-ID;
+- re-copying when the Message-ID appeared later (the surrogate hash stays stable
+  and is already written into the header on the target side).
 
-**Нормализация полей для хеша:** тримить пробелы, привести Subject к единому виду
-(убрать возможные `Re:/Fwd:` префиксы? — обсудить, по умолчанию НЕ трогаем, берём
-как есть), Date приводить к UTC unix-времени. Точный состав полей и нормализацию
-финализируем при реализации dedup-модуля.
-
-## Архитектура (предложенная структура пакетов)
+## Architecture
 
 ```
 imapsync/
   CLAUDE.md
   go.mod
   cmd/
-    imapsync/main.go        — точка входа: загрузка конфига, запуск пула, сигналы
+    imapsync/               entry point: subcommand dispatch, daemon, signals
   config/
-    config.go               — YAML-конфиг: серверы, юзеры, папки, worker/тайминги
+    config.go               YAML config: servers, users, folders, workers/timings
   internal/
     endpoint/
-      endpoint.go            — интерфейсы Backend/Endpoint (абстракция «конец
-                              синхронизации»); синкер знает только о них
-      imap.go                — IMAP-реализация поверх mailbox
-      maildir.go             — Maildir/Maildir++ на диске (type: maildir, root)
-      ews.go                 — Exchange Web Services (type: ews, SOAP, Basic auth)
-      ewstest/               — фейковый EWS-сервер для тестов
+      endpoint.go            Backend/Endpoint interfaces (the "sync endpoint"
+                             abstraction); the syncer only knows about these
+      imap.go                IMAP implementation on top of mailbox
+      maildir.go             Maildir/Maildir++ on disk (type: maildir, root)
+      ews.go                 Exchange Web Services (type: ews, SOAP, Basic auth)
+      ewstest/               a fake EWS server for tests
     mailbox/
-      client.go             — IMAP-примитивы поверх go-imap v1: connect+TLS,
-                              master-login (имперсонация), resolve/select/fetch/append
-      message.go            — разбор письма: извлечение Message-ID, Date, Subject,
-                              вычисление суррогатного хеша, чтение/запись
-                              X-Imapsync-Hash
+      client.go             IMAP primitives on top of go-imap v1: connect+TLS,
+                             master login (impersonation), resolve/select/fetch/append
+      message.go            message parsing: Message-ID, Date, Subject, surrogate
+                             hash, reading/writing X-Imapsync-Hash
     dedup/
-      index.go              — построение индекса писем папки (ключ->наличие),
-                              сравнение двух папок, вычисление "чего не хватает
-                              на каждой стороне"
+      index.go              build a folder message index (key -> presence),
+                             compare two folders, compute what's missing on each side
     syncer/
-      syncer.go             — логика синка одного юзера: подключиться к A и B,
-                              для каждой папки построить индексы, вычислить дельту,
-                              append недостающих в обе стороны, собрать статистику
-      pool.go               — worker-pool: очередь юзеров, N воркеров (N<юзеров),
-                              per-user timeout, сбор статистики, graceful shutdown
+      syncer.go             one-user sync logic: connect to both endpoints, build
+                             indexes per folder, compute the delta, append the
+                             missing messages both ways, collect stats
+      pool.go               worker pool: user queue, N workers (N < users),
+                             per-user timeout, stats collection, graceful shutdown
     stats/
-      stats.go              — счётчики per-user и агрегат, потокобезопасно
-                              (atomic/mutex), периодический вывод сводки и
-                              текущего юзера
+      stats.go              per-user and aggregate counters, thread-safe
+                             (atomic/mutex), periodic summary and per-user output
     store/
-      store.go              — локальная БД SQLite (modernc.org/sqlite, без CGO):
-                              пары папок и пользователи. Альтернативный источник
-                              конфигурации при source: sqlite, чтобы не держать
-                              большие списки в YAML.
-      state.go              — кэш инкрементальной сверки (sync_endpoint,
-                              sync_msg_cache) и статус синка по юзерам
-                              (user_status). Включается флагом state_cache.
+      store.go              local SQLite DB (modernc.org/sqlite, no CGO): folder
+                             pairs and users. An alternative config source with
+                             source: sqlite so large lists don't live in YAML.
+      state.go              incremental-reconciliation cache (sync_endpoint,
+                             sync_msg_cache) and per-user sync status
+                             (user_status, user_run). Enabled by state_cache.
 ```
 
 ## CLI
 
 ```
-imapsync run -config cfg.yaml               запуск демона (подкоманда по умолчанию)
-imapsync db-add-user   -db x.db -name ivanov -a ivanov@a -b ivanov@b [-disabled]
-imapsync db-add-folder -db x.db -a Sent -b "Отправленные"
-imapsync db-import-yaml -db x.db -config cfg.yaml     перенести списки из YAML в БД
-imapsync db-import-csv  -db x.db [-users u.csv] [-folders f.csv]
-imapsync db-list       -db x.db
+imapsync run -config cfg.yaml               run the daemon (default subcommand)
+imapsync db-add-user     -db x.db -name ivanov -a ivanov@a -b ivanov@b [-disabled]
+imapsync db-add-folder   -db x.db -a Sent -b "Sent Items"
+imapsync db-import-yaml   -db x.db -config cfg.yaml     move the YAML lists into the DB
+imapsync db-import-csv    -db x.db [-users u.csv] [-folders f.csv]
+imapsync db-list         -db x.db
+imapsync db-history      -db x.db -user ivanov [-limit 20]
+imapsync db-remove-user  -db x.db -name ivanov      (removes the user + its state)
+imapsync db-remove-folder -db x.db -a Sent -b "Sent Items"
+imapsync db-forget-user  -db x.db -name ivanov      (reset cache/status/history)
+imapsync db-resume-user  -db x.db -name ivanov      (lift the error-streak stop)
+imapsync db-vacuum       -db x.db
 ```
 
 CSV: `users` - `name,user_a,user_b[,enabled]`; `folders` - `folder_a,folder_b`.
-Строки с '#' и строка-заголовок пропускаются.
+Lines with '#' and a header row are skipped.
 
-## Конфиг (YAML) — черновой вид
+With `source: sqlite` the daemon re-reads the lists from the DB before every
+cycle (`Pool.reload`) - `db-*` changes are picked up without a restart. Run
+history lives in `user_run` (retention 200/user).
 
-```yaml
-server_a:
-  host: mail-a.corp.ru
-  port: 993
-  master_user: svc_sync
-  master_pass: "SECRET_A"
-server_b:
-  host: mail-b.corp.ru
-  port: 993
-  master_user: svc_sync
-  master_pass: "SECRET_B"
+Folder names in `folders` are resolved: exact name -> SPECIAL-USE token (`\Sent`)
+-> case-insensitive. The daemon takes a `flock` on `<sqlite_path>.lock` while a
+DB is open.
 
-# Имперсонация: SASL PLAIN с authzid (authcid = master_user, authzid = user_a/user_b).
-# Формат Dovecot "{user}*{master}" НЕ используем.
+## Config (YAML)
 
-source: yaml            # yaml (по умолчанию) | sqlite
-# sqlite_path: /var/lib/imapsync/imapsync.db   # при source: sqlite или state_cache
-# state_cache: false     # инкрементальная сверка (UID SEARCH + кэш) + user_status
+See `config.example.yaml`. Server/timing/`workers` fields always come from YAML;
+the folder and user lists may live in SQLite (`source: sqlite`). `type` on each
+server is `imap` (default), `maildir` or `ews`, and may differ between sides.
 
-# Явные пары папок (открытый вопрос 1 решён - явный маппинг). При source: sqlite
-# секции folders/users необязательны, читаются из БД.
-folders:
-  - a: "Sent"
-    b: "Отправленные"
+## Resolved design questions
 
-users:
-  - name: ivanov
-    user_a: ivanov@corp.ru
-    user_b: ivanov@corp.ru
-  - name: petrov
-    user_a: petrov@corp.ru
-    user_b: petrov@corp.ru
+1. **Folder name mapping A<->B.** An explicit list of pairs
+   `folders: [{a: "Sent", b: "Sent Items"}]`, global for all users.
+2. **Surrogate hash composition.** `Date (UTC unix) + Subject (trim, as is) +
+   From (normalized address)`. Re:/Fwd: are left alone. Messages without a Date
+   use unix=0.
+3. **Message-ID appearing later (Exchange).** No separate pass is needed.
+   `mailbox.MatchKeys` returns ALL of a message's keys at once (mid + the
+   written X-Imapsync-Hash + the always-computed surrogate); messages are
+   identical if any pair of keys matches. The surrogate is stable, so a late
+   Message-ID does not cause duplication.
+4. **APPEND and internal date/flags.** The original INTERNALDATE is preserved;
+   of the flags only `\Seen \Answered \Flagged \Draft` are carried (`\Recent`
+   cannot be set, `\Deleted` is not synced). APPEND reads the APPENDUID response
+   (UIDPLUS) when the server returns it.
+5. **Idempotency and restarts.** By default the index is rebuilt from the
+   folders every cycle - no state DB is needed, the folders + X-Imapsync-Hash
+   are the source of truth. Optionally `state_cache: true` enables incremental
+   reconciliation: the ID list comes from UID SEARCH, only new messages are
+   fetched, parsing is cached in sqlite; when the folder validity
+   (IMAP UIDVALIDITY) changes the endpoint cache is reset. The cache is only a
+   speed-up, not a source of truth (a reset means a full re-fetch). While a DB
+   is open `user_status` is also written (when and with what result each user's
+   sync ran).
+6. **Impersonation mechanism (IMAP).** SASL PLAIN with authzid on both servers:
+   `sasl.NewPlainClient(targetUser, master_user, master_pass)` (identity=authzid
+   = target user). Implemented in `mailbox.Connect`.
+7. **Limits and throttling.** The master account touches many mailboxes - the
+   number of simultaneous connections is capped at the worker count.
 
-workers: 4                 # МЕНЬШЕ числа юзеров
-sync_interval: 5m          # пауза между полными циклами
-stats_interval: 1m         # периодичность сводной статистики
-per_user_timeout: 10m
-dial_timeout: 30s
-io_timeout: 5m             # таймаут на одну IMAP-операцию
-connect_retries: 3         # повторы подключения (0 = дефолт 3)
-retry_backoff: 5s
-full_resync_every: 24h     # при state_cache: полный пере-скан папки раз в N
-max_fail_streak: 10        # стоп-синк юзера после N ошибок подряд (нужна БД; <0 = выкл)
-fetch_batch_size: 200
-insecure_tls: false
-```
-
-CLI управления БД: `db-remove-user`/`db-remove-folder`, `db-forget-user` (сброс
-кэша+статуса+истории), `db-resume-user` (снять стоп-синк), `db-history`,
-`db-vacuum`. История прогонов - `user_run` (ретенция 200/юзера).
-При `source: sqlite` демон перечитывает списки из БД перед каждым циклом
-(`Pool.reload`) - `db-*` подхватываются без рестарта.
-
-Имена в `folders` резолвятся через `mailbox.ResolveFolder`: точное имя →
-SPECIAL-USE токен (`\Sent`) → регистронезависимо. Демон при открытой БД берёт
-`flock` на `<sqlite_path>.lock`.
-
-## Открытые вопросы (решить при реализации)
-
-1. **[РЕШЕНО] Сопоставление имён папок A↔B.** Явный список пар
-   `folders: [{a: "Sent", b: "Отправленные"}]`, глобально для всех юзеров.
-2. **[РЕШЕНО] Состав суррогатного хеша.** `Date (UTC unix) + Subject (trim, как
-   есть) + From (нормализованный адрес)`. Re:/Fwd: не трогаем. Письма без Date -
-   unix=0.
-3. **[РЕШЕНО] Появление Message-ID позже (Exchange).** Отдельный проход не нужен.
-   `dedup.mailbox.MatchKeys` отдаёт для письма ВСЕ ключи сразу (mid +
-   записанный X-Imapsync-Hash + всегда вычисленный суррогат); письма идентичны
-   при совпадении любой пары ключей. Суррогат стабилен, поэтому позднее
-   появление Message-ID не приводит к задвоению.
-4. **[РЕШЕНО] APPEND и внутренняя дата/флаги.** Сохраняем оригинальный
-   INTERNALDATE; из флагов переносим только `\Seen \Answered \Flagged \Draft`
-   (`\Recent` нельзя, `\Deleted` не синхронизируем). APPEND через
-   `AppendGetUID` - читаем APPENDUID (UIDPLUS), если сервер отдаёт.
-5. **[РЕШЕНО] Идемпотентность и рестарты.** По умолчанию индекс строится каждый
-   цикл заново из папок — БД состояния НЕ нужна, источник истины папки +
-   X-Imapsync-Hash. Опционально `state_cache: true` включает инкрементальную
-   сверку (вариант 3): `UID SEARCH` даёт список UID, фетчатся только новые,
-   разбор кэшируется в sqlite; при смене UIDVALIDITY кэш эндпоинта сбрасывается.
-   Кэш - только ускорение, не источник истины (сброс = полный пере-фетч).
-   Заодно при открытой БД пишется `user_status` (когда/с каким результатом
-   отработал синк по юзеру).
-6. **[РЕШЕНО] Механизм имперсонации.** SASL PLAIN с authzid на ОБОИХ серверах:
-   `sasl.NewPlainClient(targetUser, master_user, master_pass)` (identity=authzid=
-   целевой юзер). Реализовано в `mailbox.Connect`.
-7. **Лимиты и throttling.** Мастер-УЗ ходит по многим ящикам — учесть возможные
-   лимиты одновременных соединений на сервере (см. прошлый опыт с сессиями).
-   Ограничить число одновременных соединений = числу воркеров (уже так).
-
-## Порядок реализации
-
-Все 8 шагов реализованы (+ SQLite-конфиг, + инкрементальная сверка `state_cache`
-и `user_status`), каждый модуль с тестами, `go build ./...` / `go vet ./...` /
-`go test -race ./...` зелёные.
-
-1. [x] `config/config.go` — конфиг, загрузка, валидация, дефолты; тип `Duration`
-   для YAML-строк ("5m"); `source: yaml|sqlite`; `validateBase` + публичный
-   `ValidateEntities`.
-2. [x] `internal/mailbox/client.go` — Connect (TLS + SASL PLAIN authzid),
-   FindFolder/Select/FetchHeaders/FetchFull/Append.
-3. [x] `internal/mailbox/message.go` — ParseFields, NormalizeMessageID/Addr,
-   SurrogateHash, Identity, MatchKeys (все ключи письма), InjectHashHeader.
-4. [x] `internal/dedup/index.go` — Build (мультиключевой индекс), Missing/Delta,
-   счётчик внутренних дублей.
-5. [x] `internal/stats/stats.go` — Collector, per-user atomic-счётчики,
-   Snapshot/LogSummary/LogUser, StartReporter.
-6. [x] `internal/syncer/syncer.go` — SyncUser: обе папки, обе стороны, append
-   недостающих, INTERNALDATE + фильтр флагов, ошибки не фатальны.
-7. [x] `internal/syncer/pool.go` — Pool.Run/RunCycle, worker-pool через очередь,
-   per_user_timeout, graceful shutdown по ctx.
-8. [x] `cmd/imapsync/` — main.go (диспетч подкоманд), run.go, daemon.go
-   (SIGINT/SIGTERM → context, цикл sync_interval), db.go (подкоманды db-*).
-
-## Зависимости
+## Dependencies
 
 ```
-github.com/emersion/go-imap v1.2.x      // IMAP клиент (v1!)
-github.com/emersion/go-message          // разбор MIME/заголовков
-github.com/emersion/go-sasl             // SASL PLAIN с authzid (имперсонация)
-gopkg.in/yaml.v3                         // конфиг
-modernc.org/sqlite                      // локальная БД конфигурации (без CGO)
+github.com/emersion/go-imap v1.2.x      // IMAP client (v1!)
+github.com/emersion/go-message          // MIME/header parsing
+github.com/emersion/go-sasl             // SASL PLAIN with authzid (impersonation)
+gopkg.in/yaml.v3                         // config
+modernc.org/sqlite                      // local config/state DB (no CGO)
 ```
 
-## Соглашения
+## Conventions
 
-- Комментарии и логи на русском, код/идентификаторы на английском.
-- Дефисы, не длинные тире.
-- Инкрементальные правки. Компилировать после каждого модуля (`go build ./...`).
-- Ошибки оборачивать `fmt.Errorf("...: %w", err)`, логировать с контекстом
-  (юзер/папка/сервер).
-- Никаких секретов в коде — только через конфиг/переменные окружения.
+- Comments, logs and docs in English; code/identifiers in English.
+- Hyphens, not em dashes.
+- Incremental edits. Compile after each module (`go build ./...`).
+- Wrap errors with `fmt.Errorf("...: %w", err)`, log with context
+  (user/folder/server).
+- No secrets in code - only via config / environment variables.

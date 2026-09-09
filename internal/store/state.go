@@ -9,13 +9,15 @@ import (
 	"imapsync/config"
 )
 
-// stateSchema - таблицы кэша инкрементальной сверки. Живут в том же файле, что и
-// конфигурационные таблицы.
+// stateSchema - the incremental-reconciliation cache tables. They live in the
+// same file as the config tables.
 //
-// pair - строковый ключ пары папок ("<folder_a>\x00<folder_b>"), side - 'a'|'b'.
-// schemaVersion - при росте state-таблицы кэша (sync_endpoint/sync_msg_cache)
-// пересоздаются (это чистый кэш, пере-скан всё восстановит). user_status /
-// user_run сохраняются.
+// pair is a string key for a folder pair ("<folder_a>\x00<folder_b>"),
+// side is 'a'|'b'.
+//
+// schemaVersion - when the cache tables (sync_endpoint/sync_msg_cache) evolve
+// they are recreated (this is a pure cache, a rescan restores it). user_status /
+// user_run are preserved.
 const schemaVersion = 2
 
 const stateSchema = `
@@ -50,8 +52,8 @@ CREATE TABLE IF NOT EXISTS user_status (
     skipped_dup  INTEGER NOT NULL DEFAULT 0,
     errors       INTEGER NOT NULL DEFAULT 0,
     last_error   TEXT NOT NULL DEFAULT '',
-    fail_since   INTEGER NOT NULL DEFAULT 0,  -- начало текущей серии ошибок; 0 = сейчас ok
-    fail_streak  INTEGER NOT NULL DEFAULT 0   -- сколько прогонов подряд с ошибкой
+    fail_since   INTEGER NOT NULL DEFAULT 0,  -- start of the current error streak; 0 = currently ok
+    fail_streak  INTEGER NOT NULL DEFAULT 0   -- number of consecutive failed runs
 );
 CREATE TABLE IF NOT EXISTS user_run (
     user_name   TEXT NOT NULL,
@@ -67,20 +69,20 @@ CREATE TABLE IF NOT EXISTS user_run (
 CREATE INDEX IF NOT EXISTS user_run_by_user ON user_run (user_name, run_at DESC);
 `
 
-// userRunKeep - сколько последних прогонов хранить в user_run на юзера.
+// userRunKeep - how many recent runs to keep in user_run per user.
 const userRunKeep = 200
 
-// Endpoint - сохранённое состояние одной стороны пары папок.
+// Endpoint - the stored state of one side of a folder pair.
 type Endpoint struct {
 	Exists       bool
-	Validity     string    // токен валидности (IMAP UIDVALIDITY и т.п.)
-	FullResyncAt time.Time // время последнего полного пере-скана; нулевое = не было
+	Validity     string    // validity token (IMAP UIDVALIDITY etc.)
+	FullResyncAt time.Time // time of the last full rescan; zero = never
 }
 
-// CachedMsg - разобранное письмо в кэше состояния (без сырых заголовков и тела).
+// CachedMsg - a parsed message in the state cache (without raw headers or body).
 type CachedMsg struct {
-	ID           string // непрозрачный ID письма на своей стороне
-	MsgID        string // нормализованный Message-ID
+	ID           string // opaque message ID on its own side
+	MsgID        string // normalized Message-ID
 	XHash        string
 	Surrogate    string
 	InternalDate time.Time
@@ -96,8 +98,8 @@ func decodeFlags(s string) []string {
 	return strings.Split(s, " ")
 }
 
-// LoadEndpoint возвращает сохранённое состояние эндпоинта и карту uid->письмо.
-// Если эндпоинт ещё не сохранялся - Endpoint{Exists:false} и пустая карта.
+// LoadEndpoint returns the stored endpoint state and an id->message map. If the
+// endpoint has not been saved yet - Endpoint{Exists:false} and an empty map.
 func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[string]CachedMsg, error) {
 	var ep Endpoint
 	var resyncAt int64
@@ -108,18 +110,18 @@ func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[string]Cach
 		return Endpoint{}, map[string]CachedMsg{}, nil
 	}
 	if err != nil {
-		return Endpoint{}, nil, fmt.Errorf("чтение sync_endpoint (%s/%s/%s): %w", user, pair, side, err)
+		return Endpoint{}, nil, fmt.Errorf("reading sync_endpoint (%s/%s/%s): %w", user, pair, side, err)
 	}
 	ep.Exists = true
 	if resyncAt > 0 {
-		ep.FullResyncAt = time.Unix(0, resyncAt) // хранится в наносекундах
+		ep.FullResyncAt = time.Unix(0, resyncAt) // stored in nanoseconds
 	}
 
 	rows, err := s.db.Query(
 		`SELECT msg_id, msgid, xhash, surrogate, internaldate, flags FROM sync_msg_cache
 		 WHERE user_name=? AND pair=? AND side=?`, user, pair, side)
 	if err != nil {
-		return Endpoint{}, nil, fmt.Errorf("чтение sync_msg_cache (%s/%s/%s): %w", user, pair, side, err)
+		return Endpoint{}, nil, fmt.Errorf("reading sync_msg_cache (%s/%s/%s): %w", user, pair, side, err)
 	}
 	defer rows.Close()
 
@@ -129,7 +131,7 @@ func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[string]Cach
 		var idate int64
 		var flags string
 		if err := rows.Scan(&m.ID, &m.MsgID, &m.XHash, &m.Surrogate, &idate, &flags); err != nil {
-			return Endpoint{}, nil, fmt.Errorf("разбор строки sync_msg_cache: %w", err)
+			return Endpoint{}, nil, fmt.Errorf("parsing sync_msg_cache row: %w", err)
 		}
 		m.InternalDate = time.Unix(idate, 0)
 		m.Flags = decodeFlags(flags)
@@ -138,8 +140,8 @@ func (s *Store) LoadEndpoint(user, pair, side string) (Endpoint, map[string]Cach
 	return ep, msgs, rows.Err()
 }
 
-// SaveEndpoint фиксирует токен валидности и время последнего полного пере-скана.
-// Нулевой fullResyncAt означает «пере-скан не делался» и записывается как 0.
+// SaveEndpoint records the validity token and the time of the last full rescan.
+// A zero fullResyncAt means "no rescan yet" and is stored as 0.
 func (s *Store) SaveEndpoint(user, pair, side, validity string, fullResyncAt time.Time) error {
 	var resyncAt int64
 	if !fullResyncAt.IsZero() {
@@ -152,19 +154,20 @@ func (s *Store) SaveEndpoint(user, pair, side, validity string, fullResyncAt tim
 			validity=excluded.validity, full_resync_at=excluded.full_resync_at, updated_at=excluded.updated_at`,
 		user, pair, side, validity, resyncAt, time.Now().Unix())
 	if err != nil {
-		return fmt.Errorf("запись sync_endpoint (%s/%s/%s): %w", user, pair, side, err)
+		return fmt.Errorf("writing sync_endpoint (%s/%s/%s): %w", user, pair, side, err)
 	}
 	return nil
 }
 
-// PutCachedMsgs добавляет/заменяет письма в кэше эндпоинта одной транзакцией.
+// PutCachedMsgs inserts/replaces messages in the endpoint cache in one
+// transaction.
 func (s *Store) PutCachedMsgs(user, pair, side string, msgs []CachedMsg) error {
 	if len(msgs) == 0 {
 		return nil
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin tx кэша: %w", err)
+		return fmt.Errorf("begin cache tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -175,24 +178,24 @@ func (s *Store) PutCachedMsgs(user, pair, side string, msgs []CachedMsg) error {
 			msgid=excluded.msgid, xhash=excluded.xhash, surrogate=excluded.surrogate,
 			internaldate=excluded.internaldate, flags=excluded.flags`)
 	if err != nil {
-		return fmt.Errorf("prepare кэша: %w", err)
+		return fmt.Errorf("preparing cache stmt: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, m := range msgs {
 		if _, err := stmt.Exec(user, pair, side, m.ID, m.MsgID, m.XHash, m.Surrogate,
 			m.InternalDate.Unix(), encodeFlags(m.Flags)); err != nil {
-			return fmt.Errorf("вставка письма id=%s в кэш: %w", m.ID, err)
+			return fmt.Errorf("inserting message id=%s into cache: %w", m.ID, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit кэша: %w", err)
+		return fmt.Errorf("committing cache: %w", err)
 	}
 	return nil
 }
 
-// DeleteCachedMsgs убирает из кэша письма с указанными ID (например удалённые на
-// сервере).
+// DeleteCachedMsgs removes messages with the given IDs from the cache (e.g.
+// deleted on the server).
 func (s *Store) DeleteCachedMsgs(user, pair, side string, ids []string) error {
 	const chunk = 400
 	for start := 0; start < len(ids); start += chunk {
@@ -208,17 +211,17 @@ func (s *Store) DeleteCachedMsgs(user, pair, side string, ids []string) error {
 		q := fmt.Sprintf(
 			`DELETE FROM sync_msg_cache WHERE user_name=? AND pair=? AND side=? AND msg_id IN (%s)`, ph)
 		if _, err := s.db.Exec(q, args...); err != nil {
-			return fmt.Errorf("удаление писем из кэша (%s/%s/%s): %w", user, pair, side, err)
+			return fmt.Errorf("deleting messages from cache (%s/%s/%s): %w", user, pair, side, err)
 		}
 	}
 	return nil
 }
 
-// ResetEndpoint полностью сбрасывает кэш эндпоинта (при смене UIDVALIDITY).
+// ResetEndpoint fully resets the endpoint cache (on a validity change).
 func (s *Store) ResetEndpoint(user, pair, side string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin tx сброса эндпоинта: %w", err)
+		return fmt.Errorf("begin endpoint-reset tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -227,18 +230,18 @@ func (s *Store) ResetEndpoint(user, pair, side string) error {
 		`DELETE FROM sync_endpoint WHERE user_name=? AND pair=? AND side=?`,
 	} {
 		if _, err := tx.Exec(q, user, pair, side); err != nil {
-			return fmt.Errorf("сброс эндпоинта (%s/%s/%s): %w", user, pair, side, err)
+			return fmt.Errorf("resetting endpoint (%s/%s/%s): %w", user, pair, side, err)
 		}
 	}
 	return tx.Commit()
 }
 
-// PairKey строит строковый ключ пары папок для таблиц состояния.
+// PairKey builds a string key for a folder pair for the state tables.
 func PairKey(folderA, folderB string) string {
 	return folderA + "\x00" + folderB
 }
 
-// RunResult - итог одного прохода синка по пользователю.
+// RunResult - the outcome of one sync run for a user.
 type RunResult struct {
 	At         time.Time
 	Status     string // "ok" | "error"
@@ -249,23 +252,23 @@ type RunResult struct {
 	LastError  string
 }
 
-// UserStatus - текущее состояние пользователя (последний прогон + серия ошибок).
+// UserStatus - a user's current state (last run + error streak).
 type UserStatus struct {
 	LastRun    time.Time
-	LastOK     time.Time // время последнего прохода без ошибок
+	LastOK     time.Time // time of the last run without errors
 	Status     string    // "ok" | "error"
 	CopiedAToB int64
 	CopiedBToA int64
 	SkippedDup int64
 	Errors     int64
 	LastError  string
-	FailSince  time.Time // начало текущей серии ошибок; нулевое = сейчас ok
-	FailStreak int64     // сколько прогонов подряд завершились ошибкой
+	FailSince  time.Time // start of the current error streak; zero = currently ok
+	FailStreak int64     // number of consecutive failed runs
 }
 
-// RecordRun фиксирует итог прохода: пишет строку в историю user_run,
-// обновляет текущий статус user_status (включая серию ошибок) и подрезает
-// историю до userRunKeep последних записей.
+// RecordRun records a run outcome: writes a row into the user_run history,
+// updates the current user_status (including the error streak) and trims the
+// history to userRunKeep most recent entries.
 func (s *Store) RecordRun(user string, r RunResult) error {
 	if r.Status == "" {
 		r.Status = "ok"
@@ -275,7 +278,7 @@ func (s *Store) RecordRun(user string, r RunResult) error {
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin tx user_run (%s): %w", user, err)
+		return fmt.Errorf("begin user_run tx (%s): %w", user, err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
@@ -286,14 +289,14 @@ func (s *Store) RecordRun(user string, r RunResult) error {
 			status=excluded.status, copied_a_b=excluded.copied_a_b, copied_b_a=excluded.copied_b_a,
 			skipped_dup=excluded.skipped_dup, errors=excluded.errors, last_error=excluded.last_error`,
 		user, at, r.Status, r.CopiedAToB, r.CopiedBToA, r.SkippedDup, r.Errors, r.LastError); err != nil {
-		return fmt.Errorf("запись user_run (%s): %w", user, err)
+		return fmt.Errorf("writing user_run (%s): %w", user, err)
 	}
 
 	var lastOK, failSince, failStreak int64
 	if !failed {
 		lastOK = at
 	} else {
-		failSince = at // при первом же прогоне-ошибке; при последующих - COALESCE ниже
+		failSince = at // on the very first failed run; on later ones - COALESCE below
 		failStreak = 1
 	}
 	if _, err := tx.Exec(`
@@ -314,15 +317,15 @@ func (s *Store) RecordRun(user string, r RunResult) error {
 			                   ELSE 0 END,
 			fail_streak = CASE WHEN excluded.status='error' THEN user_status.fail_streak + 1 ELSE 0 END`,
 		user, at, lastOK, r.Status, r.CopiedAToB, r.CopiedBToA, r.SkippedDup, r.Errors, r.LastError, failSince, failStreak); err != nil {
-		return fmt.Errorf("запись user_status (%s): %w", user, err)
+		return fmt.Errorf("writing user_status (%s): %w", user, err)
 	}
 
-	// подрезаем историю
+	// trim history
 	if _, err := tx.Exec(`
 		DELETE FROM user_run WHERE user_name=? AND run_at NOT IN (
 			SELECT run_at FROM user_run WHERE user_name=? ORDER BY run_at DESC LIMIT ?
 		)`, user, user, userRunKeep); err != nil {
-		return fmt.Errorf("чистка user_run (%s): %w", user, err)
+		return fmt.Errorf("trimming user_run (%s): %w", user, err)
 	}
 	return tx.Commit()
 }
@@ -349,11 +352,11 @@ func scanUserStatus(sc interface{ Scan(...any) error }) (string, UserStatus, err
 const userStatusCols = `user_name, last_run_at, last_ok_at, status,
 	copied_a_b, copied_b_a, skipped_dup, errors, last_error, fail_since, fail_streak`
 
-// UserStatuses возвращает статусы всех пользователей, по которым он записан.
+// UserStatuses returns the status of every user it has been recorded for.
 func (s *Store) UserStatuses() (map[string]UserStatus, error) {
 	rows, err := s.db.Query(`SELECT ` + userStatusCols + ` FROM user_status`)
 	if err != nil {
-		return nil, fmt.Errorf("чтение user_status: %w", err)
+		return nil, fmt.Errorf("reading user_status: %w", err)
 	}
 	defer rows.Close()
 
@@ -361,14 +364,15 @@ func (s *Store) UserStatuses() (map[string]UserStatus, error) {
 	for rows.Next() {
 		name, st, err := scanUserStatus(rows)
 		if err != nil {
-			return nil, fmt.Errorf("разбор строки user_status: %w", err)
+			return nil, fmt.Errorf("parsing user_status row: %w", err)
 		}
 		out[name] = st
 	}
 	return out, rows.Err()
 }
 
-// UserStatusOf возвращает статус одного пользователя. Второе значение - найден ли.
+// UserStatusOf returns one user's status. The second value reports whether it
+// was found.
 func (s *Store) UserStatusOf(user string) (UserStatus, bool, error) {
 	_, st, err := scanUserStatus(s.db.QueryRow(
 		`SELECT `+userStatusCols+` FROM user_status WHERE user_name=?`, user))
@@ -376,26 +380,26 @@ func (s *Store) UserStatusOf(user string) (UserStatus, bool, error) {
 		return UserStatus{}, false, nil
 	}
 	if err != nil {
-		return UserStatus{}, false, fmt.Errorf("чтение user_status (%s): %w", user, err)
+		return UserStatus{}, false, fmt.Errorf("reading user_status (%s): %w", user, err)
 	}
 	return st, true, nil
 }
 
-// ResumeUser сбрасывает серию ошибок пользователя (fail_streak/fail_since),
-// не трогая кэш и историю. Останавливает действие max_fail_streak.
+// ResumeUser clears a user's error streak (fail_streak/fail_since) without
+// touching the cache or history. It lifts the max_fail_streak stop.
 func (s *Store) ResumeUser(user string) error {
 	res, err := s.db.Exec(
 		`UPDATE user_status SET fail_streak=0, fail_since=0 WHERE user_name=?`, strings.TrimSpace(user))
 	if err != nil {
-		return fmt.Errorf("сброс серии ошибок (%s): %w", user, err)
+		return fmt.Errorf("clearing error streak (%s): %w", user, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("по юзеру %q нет статуса (нечего сбрасывать)", user)
+		return fmt.Errorf("user %q has no status (nothing to clear)", user)
 	}
 	return nil
 }
 
-// UserRuns возвращает последние прогоны пользователя (новые первыми).
+// UserRuns returns a user's most recent runs (newest first).
 func (s *Store) UserRuns(user string, limit int) ([]RunResult, error) {
 	if limit <= 0 {
 		limit = 50
@@ -404,7 +408,7 @@ func (s *Store) UserRuns(user string, limit int) ([]RunResult, error) {
 		SELECT run_at, status, copied_a_b, copied_b_a, skipped_dup, errors, last_error
 		FROM user_run WHERE user_name=? ORDER BY run_at DESC LIMIT ?`, user, limit)
 	if err != nil {
-		return nil, fmt.Errorf("чтение user_run (%s): %w", user, err)
+		return nil, fmt.Errorf("reading user_run (%s): %w", user, err)
 	}
 	defer rows.Close()
 
@@ -413,7 +417,7 @@ func (s *Store) UserRuns(user string, limit int) ([]RunResult, error) {
 		var r RunResult
 		var at int64
 		if err := rows.Scan(&at, &r.Status, &r.CopiedAToB, &r.CopiedBToA, &r.SkippedDup, &r.Errors, &r.LastError); err != nil {
-			return nil, fmt.Errorf("разбор строки user_run: %w", err)
+			return nil, fmt.Errorf("parsing user_run row: %w", err)
 		}
 		r.At = time.Unix(at, 0)
 		out = append(out, r)
@@ -421,38 +425,38 @@ func (s *Store) UserRuns(user string, limit int) ([]RunResult, error) {
 	return out, rows.Err()
 }
 
-// DeleteUser убирает пользователя из таблицы users.
+// DeleteUser removes a user from the users table.
 func (s *Store) DeleteUser(name string) error {
 	res, err := s.db.Exec(`DELETE FROM users WHERE name=?`, strings.TrimSpace(name))
 	if err != nil {
-		return fmt.Errorf("удаление пользователя %q: %w", name, err)
+		return fmt.Errorf("deleting user %q: %w", name, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("пользователь %q не найден", name)
+		return fmt.Errorf("user %q not found", name)
 	}
 	return nil
 }
 
-// DeleteFolderPair убирает пару папок.
+// DeleteFolderPair removes a folder pair.
 func (s *Store) DeleteFolderPair(fp config.FolderPair) error {
 	res, err := s.db.Exec(`DELETE FROM folder_pairs WHERE folder_a=? AND folder_b=?`,
 		strings.TrimSpace(fp.A), strings.TrimSpace(fp.B))
 	if err != nil {
-		return fmt.Errorf("удаление пары папок %q/%q: %w", fp.A, fp.B, err)
+		return fmt.Errorf("deleting folder pair %q/%q: %w", fp.A, fp.B, err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("пара папок %q/%q не найдена", fp.A, fp.B)
+		return fmt.Errorf("folder pair %q/%q not found", fp.A, fp.B)
 	}
 	return nil
 }
 
-// ForgetUser удаляет всё состояние пользователя (кэш, статус, история). Сам
-// пользователь в таблице users остаётся - следующий цикл начнёт синк с нуля.
+// ForgetUser deletes all of a user's state (cache, status, history). The user
+// itself stays in the users table - the next cycle starts syncing from scratch.
 func (s *Store) ForgetUser(name string) error {
 	name = strings.TrimSpace(name)
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin tx forget (%s): %w", name, err)
+		return fmt.Errorf("begin forget tx (%s): %w", name, err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 	for _, q := range []string{
@@ -462,13 +466,13 @@ func (s *Store) ForgetUser(name string) error {
 		`DELETE FROM user_run       WHERE user_name=?`,
 	} {
 		if _, err := tx.Exec(q, name); err != nil {
-			return fmt.Errorf("очистка состояния %q: %w", name, err)
+			return fmt.Errorf("clearing state for %q: %w", name, err)
 		}
 	}
 	return tx.Commit()
 }
 
-// Vacuum сжимает файл БД (после массовых удалений).
+// Vacuum compacts the DB file (after bulk deletes).
 func (s *Store) Vacuum() error {
 	if _, err := s.db.Exec(`VACUUM`); err != nil {
 		return fmt.Errorf("VACUUM: %w", err)

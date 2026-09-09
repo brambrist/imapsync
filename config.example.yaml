@@ -1,8 +1,8 @@
-# Пример конфига IMAP Sync.
-# Имперсонация: SASL PLAIN с authzid (authcid = master_user, authzid = user_a/user_b).
+# Example imapsync config.
+# Impersonation: SASL PLAIN with authzid (authcid = master_user, authzid = user_a/user_b).
 
 server_a:
-  type: imap              # imap (по умолчанию) | maildir
+  type: imap              # imap (default) | maildir | ews
   host: mail-a.corp.ru
   port: 993
   master_user: svc_sync
@@ -15,26 +15,26 @@ server_b:
   master_user: svc_sync
   master_pass: "SECRET_B"
 
-# Тип задаётся на каждой стороне независимо (смешанные пары работают):
+# The type is set per side independently (mixed pairs work):
 # server_a:
 #   type: maildir
-#   root: /var/vmail/%d/%n/Maildir   # %u - весь user_a/user_b, %n - до @, %d - домен
+#   root: /var/vmail/%d/%n/Maildir   # %u - whole user_a/user_b, %n - before @, %d - domain
 # server_b:
 #   type: ews
-#   ews_url: https://exch.corp.ru/EWS/Exchange.asmx   # или просто host
-#   master_user: svc_sync           # учётка с ролью ApplicationImpersonation
-#   master_pass: "SECRET"           # auth: только Basic (для O365 нужен OAuth2)
+#   ews_url: https://exch.corp.ru/EWS/Exchange.asmx   # or just host
+#   master_user: svc_sync           # account with the ApplicationImpersonation role
+#   master_pass: "SECRET"           # auth: Basic only (O365 needs OAuth2)
 
-# Источник списков folders/users: "yaml" (по умолчанию) или "sqlite".
-# При "sqlite" секции folders/users ниже необязательны и игнорируются,
-# данные читаются из файла sqlite_path. Наполнять БД - командами imapsync db-*.
+# Source of the folders/users lists: "yaml" (default) or "sqlite".
+# With "sqlite" the folders/users sections below are optional and ignored;
+# data is read from sqlite_path. Populate the DB with the imapsync db-* commands.
 source: yaml
 # sqlite_path: /var/lib/imapsync/imapsync.db
 
-# Явные пары папок: имя на A -> имя на B.
+# Explicit folder pairs: name on A -> name on B.
 folders:
   - a: "Sent"
-    b: "Отправленные"
+    b: "Sent Items"
 
 users:
   - name: ivanov
@@ -47,37 +47,37 @@ users:
     user_a: sidorov@corp.ru
     user_b: sidorov@corp.ru
 
-workers: 2                 # МЕНЬШЕ числа юзеров
-sync_interval: 5m          # пауза между полными циклами
-stats_interval: 1m         # периодичность сводной статистики
-per_user_timeout: 10m      # общий бюджет времени на одного юзера
-dial_timeout: 30s          # таймаут установки TCP-соединения
-io_timeout: 5m             # таймаут на одну IMAP-операцию (FETCH/APPEND/...)
+workers: 2                 # FEWER than the number of users
+sync_interval: 5m          # pause between full cycles
+stats_interval: 1m         # summary stats period
+per_user_timeout: 10m      # total time budget for one user
+dial_timeout: 30s          # TCP connect timeout
+io_timeout: 5m             # timeout for one IMAP operation (FETCH/APPEND/...)
 fetch_batch_size: 200
 insecure_tls: false
 hash_header: "X-Imapsync-Hash"
 
-# Повторы подключения при обрыве/транзиентной ошибке.
-# connect_retries: 0 означает "дефолт" (3); для полного отключения не годится.
+# Connection retries on a drop / transient error.
+# connect_retries: 0 means "default" (3); a negative value disables retries.
 connect_retries: 3
-retry_backoff: 5s          # базовая пауза, растёт экспоненциально
+retry_backoff: 5s          # base pause, grows exponentially
 
-# Имена папок из folders сопоставляются с реальными: точное имя -> SPECIAL-USE
-# токен ("\\Sent", "\\Drafts", ...) -> регистронезависимо. Можно писать:
+# Folder names in `folders` are matched to real ones: exact name -> SPECIAL-USE
+# token ("\\Sent", "\\Drafts", ...) -> case-insensitive. You may write:
 #   folders: [{a: "\\Sent", b: "\\Sent"}]
 
-# Инкрементальная сверка: список UID берётся через UID SEARCH, заголовки
-# фетчатся только для новых писем, разбор кэшируется в sqlite_path. Резко
-# снижает нагрузку на больших папках. Требует sqlite_path (можно тот же файл,
-# что и для source: sqlite). При включении в БД также пишется таблица
-# user_status - когда и с каким результатом отработал синк по каждому юзеру
-# (виден через `imapsync db-list`). Демон берёт эксклюзивную блокировку на
-# <sqlite_path>.lock - второй экземпляр на ту же БД не запустится.
+# Incremental reconciliation: the ID list comes from UID SEARCH, headers are
+# fetched only for new messages, and parsing is cached in sqlite_path. Cuts the
+# load dramatically on large folders. Requires sqlite_path (may be the same file
+# as source: sqlite). When enabled, the DB also gets a user_status table -
+# when and with what result each user's sync ran (shown by `imapsync db-list`).
+# The daemon takes an exclusive lock on <sqlite_path>.lock - a second instance
+# on the same DB will not start.
 state_cache: false
 # sqlite_path: /var/lib/imapsync/imapsync.db
-full_resync_every: 24h     # как часто делать полный пере-скан папки (отлов дрейфа кэша)
+full_resync_every: 24h     # how often to do a full folder rescan (catch cache drift)
 
-# После стольких прогонов подряд с ошибкой синк юзера останавливается
-# (снять: `imapsync db-resume-user -name X` или db-forget-user). Требует БД
-# (state_cache или source: sqlite). Отрицательное значение отключает.
+# After this many consecutive failed runs a user's sync stops
+# (lift it with `imapsync db-resume-user -name X` or db-forget-user). Requires a
+# DB (state_cache or source: sqlite). A negative value disables it.
 max_fail_streak: 10

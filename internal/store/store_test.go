@@ -26,7 +26,7 @@ func TestUpsertAndListUsers(t *testing.T) {
 	if err := st.UpsertUser(config.User{Name: "petrov", UserA: "p@a", UserB: "p@b"}, false); err != nil {
 		t.Fatal(err)
 	}
-	// повторный upsert обновляет
+	// a second upsert updates
 	if err := st.UpsertUser(config.User{Name: "ivanov", UserA: "i2@a", UserB: "i2@b"}, true); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestUpsertAndListUsers(t *testing.T) {
 func TestFolderPairsNoDup(t *testing.T) {
 	st := openTemp(t)
 	for range 3 {
-		if err := st.UpsertFolderPair(config.FolderPair{A: "Sent", B: "Отправленные"}); err != nil {
+		if err := st.UpsertFolderPair(config.FolderPair{A: "Sent", B: "Sent Items"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -60,7 +60,7 @@ func TestFolderPairsNoDup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(fps) != 1 {
-		t.Fatalf("ожидали 1 пару, got %+v", fps)
+		t.Fatalf("expected 1 pair, got %+v", fps)
 	}
 }
 
@@ -72,10 +72,10 @@ func TestSetUserEnabled(t *testing.T) {
 	}
 	got, _ := st.ListUsers()
 	if len(got) != 1 {
-		t.Fatalf("юзер не включился: %+v", got)
+		t.Fatalf("user was not enabled: %+v", got)
 	}
 	if err := st.SetUserEnabled("missing", true); err == nil {
-		t.Error("ожидали ошибку для несуществующего юзера")
+		t.Error("expected an error for a missing user")
 	}
 }
 
@@ -105,9 +105,9 @@ func TestLoadIntoAndImportConfig(t *testing.T) {
 func TestRejectsEmptyFields(t *testing.T) {
 	st := openTemp(t)
 	if err := st.UpsertUser(config.User{Name: "x", UserA: "", UserB: "b"}, true); err == nil {
-		t.Error("ожидали ошибку на пустой user_a")
+		t.Error("expected an error on empty user_a")
 	}
 	if err := st.UpsertFolderPair(config.FolderPair{A: "  ", B: "b"}); err == nil {
-		t.Error("ожидали ошибку на пустое имя папки")
+		t.Error("expected an error on empty folder name")
 	}
 }

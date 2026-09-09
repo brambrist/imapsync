@@ -1,5 +1,5 @@
-// Package mailbox - обёртка над github.com/emersion/go-imap v1: подключение с
-// TLS, мастер-логин (имперсонация через SASL PLAIN authzid), операции с папками
+// Package mailbox wraps github.com/emersion/go-imap v1: TLS connection, master
+// login (impersonation via SASL PLAIN authzid) and folder operations
 // (list/select/fetch/append).
 package mailbox
 
@@ -22,47 +22,47 @@ import (
 	"imapsync/config"
 )
 
-// Client - тонкая обёртка над imap-клиентом с привязкой к конкретному
-// (сервер, целевой пользователь) для контекста в ошибках и логах.
+// Client is a thin wrapper over the imap client bound to a specific
+// (server, target user) for context in errors and logs.
 type Client struct {
 	c      *client.Client
-	server string // host:port - для сообщений об ошибках
-	user   string // целевой пользователь (authzid)
+	server string // host:port - for error messages
+	user   string // target user (authzid)
 
 	closeOnce sync.Once
 	closed    chan struct{}
 
-	folders []*imap.MailboxInfo // кэш LIST на время жизни соединения
+	folders []*imap.MailboxInfo // LIST cache for the connection lifetime
 }
 
-// Connect устанавливает TLS-соединение и авторизуется как targetUser через
-// мастер-учётку сервера (SASL PLAIN: authcid = master_user, authzid = targetUser).
+// Connect establishes a TLS connection and authenticates as targetUser via the
+// server's master account (SASL PLAIN: authcid = master_user, authzid = targetUser).
 //
-// ioTimeout - дедлайн на одну IMAP-операцию. Кроме того, при отмене ctx
-// TCP-соединение принудительно закрывается (Terminate), что прерывает висящий
-// вызов - go-imap v1 сам по себе не реагирует на context.
+// ioTimeout is the deadline for one IMAP operation. In addition, when ctx is
+// cancelled the TCP connection is force-closed (Terminate), which interrupts a
+// hung call - go-imap v1 does not react to context on its own.
 func Connect(ctx context.Context, srv config.Server, targetUser string, dialTimeout, ioTimeout time.Duration, insecureTLS bool) (*Client, error) {
 	addr := srv.Addr()
 
 	dialer := &net.Dialer{Timeout: dialTimeout}
 	tlsCfg := &tls.Config{
 		ServerName:         srv.Host,
-		InsecureSkipVerify: insecureTLS, //nolint:gosec // управляется конфигом insecure_tls
+		InsecureSkipVerify: insecureTLS, //nolint:gosec // controlled by the insecure_tls config
 	}
 
 	imapCli, err := client.DialWithDialerTLS(dialer, addr, tlsCfg)
 	if err != nil {
-		return nil, fmt.Errorf("подключение к %s (юзер %s): %w", addr, targetUser, err)
+		return nil, fmt.Errorf("connecting to %s (user %s): %w", addr, targetUser, err)
 	}
 
-	// Дедлайн на каждую последующую операцию ввода-вывода.
+	// Deadline for every subsequent I/O operation.
 	imapCli.Timeout = ioTimeout
 
-	// SASL PLAIN с authzid: identity(authzid)=целевой юзер, username(authcid)=мастер.
+	// SASL PLAIN with authzid: identity(authzid)=target user, username(authcid)=master.
 	auth := sasl.NewPlainClient(targetUser, srv.MasterUser, srv.MasterPass)
 	if err := imapCli.Authenticate(auth); err != nil {
 		_ = imapCli.Logout()
-		return nil, fmt.Errorf("имперсонация %s на %s через мастера %s: %w", targetUser, addr, srv.MasterUser, err)
+		return nil, fmt.Errorf("impersonating %s on %s via master %s: %w", targetUser, addr, srv.MasterUser, err)
 	}
 
 	cl := &Client{c: imapCli, server: addr, user: targetUser, closed: make(chan struct{})}
@@ -70,7 +70,7 @@ func Connect(ctx context.Context, srv config.Server, targetUser string, dialTime
 	return cl, nil
 }
 
-// watch закрывает соединение при отмене ctx, прерывая любой висящий вызов.
+// watch closes the connection when ctx is cancelled, interrupting any hung call.
 func (cl *Client) watch(ctx context.Context) {
 	select {
 	case <-ctx.Done():
@@ -79,13 +79,13 @@ func (cl *Client) watch(ctx context.Context) {
 	}
 }
 
-// Logout закрывает сессию. Ошибку логаута считаем некритичной.
+// Logout closes the session. A logout error is treated as non-critical.
 func (cl *Client) Logout() {
 	cl.closeOnce.Do(func() { close(cl.closed) })
 	_ = cl.c.Logout()
 }
 
-// известные SPECIAL-USE атрибуты (RFC 6154).
+// known SPECIAL-USE attributes (RFC 6154).
 var specialUseAttrs = map[string]bool{
 	`\All`: true, `\Archive`: true, `\Drafts`: true, `\Flagged`: true,
 	`\Junk`: true, `\Sent`: true, `\Trash`: true,
@@ -104,19 +104,20 @@ func (cl *Client) listFolders() ([]*imap.MailboxInfo, error) {
 		out = append(out, m)
 	}
 	if err := <-done; err != nil {
-		return nil, fmt.Errorf("LIST на %s (юзер %s): %w", cl.server, cl.user, err)
+		return nil, fmt.Errorf("LIST on %s (user %s): %w", cl.server, cl.user, err)
 	}
 	cl.folders = out
 	return out, nil
 }
 
-// ResolveFolder приводит имя папки из конфига к реальному имени на сервере:
-//  1. точное совпадение;
-//  2. если name - это SPECIAL-USE токен (например "\Sent") - ищем папку с таким
-//     атрибутом;
-//  3. регистронезависимое совпадение.
+// ResolveFolder maps a folder name from the config to the real name on the
+// server:
+//  1. exact match;
+//  2. if name is a SPECIAL-USE token (e.g. "\Sent") - find a folder with that
+//     attribute;
+//  3. case-insensitive match.
 //
-// Если папка не найдена - ошибка со списком доступных папок.
+// If the folder is not found - an error listing the available folders.
 func (cl *Client) ResolveFolder(name string) (string, error) {
 	infos, err := cl.listFolders()
 	if err != nil {
@@ -147,37 +148,37 @@ func (cl *Client) ResolveFolder(name string) (string, error) {
 	for _, m := range infos {
 		avail = append(avail, m.Name)
 	}
-	return "", fmt.Errorf("папка %q не найдена на %s (юзер %s); доступны: %s",
+	return "", fmt.Errorf("folder %q not found on %s (user %s); available: %s",
 		name, cl.server, cl.user, strings.Join(avail, ", "))
 }
 
-// Select открывает папку для чтения-записи и возвращает её статус.
+// Select opens a folder for read-write and returns its status.
 func (cl *Client) Select(name string) (*imap.MailboxStatus, error) {
 	st, err := cl.c.Select(name, false)
 	if err != nil {
-		return nil, fmt.Errorf("SELECT %q на %s (юзер %s): %w", name, cl.server, cl.user, err)
+		return nil, fmt.Errorf("SELECT %q on %s (user %s): %w", name, cl.server, cl.user, err)
 	}
 	return st, nil
 }
 
-// headerSection - секция BODY.PEEK[HEADER] (без снятия флага \Seen).
+// headerSection is the BODY.PEEK[HEADER] section (does not clear the \Seen flag).
 var headerSection = &imap.BodySectionName{
 	BodyPartName: imap.BodyPartName{Specifier: imap.HeaderSpecifier},
 	Peek:         true,
 }
 
-// fullSection - секция BODY.PEEK[] (всё письмо целиком).
+// fullSection is the BODY.PEEK[] section (the whole message).
 var fullSection = &imap.BodySectionName{Peek: true}
 
-// FetchedMessage - письмо с метаданными и сырыми заголовками, достаточными для
-// построения индекса дедупликации.
+// FetchedMessage is a message with metadata and raw headers, enough to build
+// the dedup index.
 type FetchedMessage struct {
 	SeqNum       uint32
 	Uid          uint32
 	Flags        []string
 	InternalDate time.Time
 	Size         uint32
-	Header       []byte // сырой блок заголовков (RFC 822)
+	Header       []byte // raw header block (RFC 822)
 }
 
 var headerFetchItems = []imap.FetchItem{
@@ -188,7 +189,8 @@ var headerFetchItems = []imap.FetchItem{
 	headerSection.FetchItem(),
 }
 
-// decodeHeaderMsg превращает *imap.Message в FetchedMessage, читая блок заголовков.
+// decodeHeaderMsg turns an *imap.Message into a FetchedMessage, reading the
+// header block.
 func (cl *Client) decodeHeaderMsg(msg *imap.Message) (FetchedMessage, error) {
 	fm := FetchedMessage{
 		SeqNum:       msg.SeqNum,
@@ -200,16 +202,16 @@ func (cl *Client) decodeHeaderMsg(msg *imap.Message) (FetchedMessage, error) {
 	if body := msg.GetBody(headerSection); body != nil {
 		raw, err := io.ReadAll(body)
 		if err != nil {
-			return fm, fmt.Errorf("чтение заголовков uid=%d на %s (юзер %s): %w", msg.Uid, cl.server, cl.user, err)
+			return fm, fmt.Errorf("reading headers uid=%d on %s (user %s): %w", msg.Uid, cl.server, cl.user, err)
 		}
 		fm.Header = raw
 	}
 	return fm, nil
 }
 
-// FetchHeaders забирает заголовки, флаги, INTERNALDATE, UID и размер всех писем
-// папки батчами по batchSize (по порядковым номерам). Папка должна быть уже
-// выбрана через Select.
+// FetchHeaders fetches headers, flags, INTERNALDATE, UID and size of every
+// message in the folder in batches of batchSize (by sequence number). The folder
+// must already be selected via Select.
 func (cl *Client) FetchHeaders(total uint32, batchSize int) ([]FetchedMessage, error) {
 	if total == 0 {
 		return nil, nil
@@ -232,27 +234,29 @@ func (cl *Client) FetchHeaders(total uint32, batchSize int) ([]FetchedMessage, e
 			out = append(out, fm)
 		}
 		if err := <-done; err != nil {
-			return nil, fmt.Errorf("FETCH заголовков %d:%d на %s (юзер %s): %w", from, to, cl.server, cl.user, err)
+			return nil, fmt.Errorf("FETCH headers %d:%d on %s (user %s): %w", from, to, cl.server, cl.user, err)
 		}
 	}
 	return out, nil
 }
 
-// UIDSearchAll возвращает UID всех писем выбранной папки (SEARCH UID 1:*).
-// Дёшево даже для крупных папок: один round-trip, ответ - список чисел.
+// UIDSearchAll returns the UIDs of every message in the selected folder
+// (SEARCH UID 1:*). Cheap even for large folders: one round-trip, the response
+// is a list of numbers.
 func (cl *Client) UIDSearchAll() ([]uint32, error) {
 	crit := imap.NewSearchCriteria()
 	crit.Uid = new(imap.SeqSet)
 	crit.Uid.AddRange(1, 0) // 1:*
 	uids, err := cl.c.UidSearch(crit)
 	if err != nil {
-		return nil, fmt.Errorf("UID SEARCH на %s (юзер %s): %w", cl.server, cl.user, err)
+		return nil, fmt.Errorf("UID SEARCH on %s (user %s): %w", cl.server, cl.user, err)
 	}
 	return uids, nil
 }
 
-// FetchHeadersByUID забирает заголовки, флаги, INTERNALDATE и размер писем с
-// указанными UID батчами по batchSize. Папка должна быть выбрана через Select.
+// FetchHeadersByUID fetches headers, flags, INTERNALDATE and size of the
+// messages with the given UIDs in batches of batchSize. The folder must be
+// selected via Select.
 func (cl *Client) FetchHeadersByUID(uids []uint32, batchSize int) ([]FetchedMessage, error) {
 	if len(uids) == 0 {
 		return nil, nil
@@ -280,15 +284,15 @@ func (cl *Client) FetchHeadersByUID(uids []uint32, batchSize int) ([]FetchedMess
 			out = append(out, fm)
 		}
 		if err := <-done; err != nil {
-			return nil, fmt.Errorf("FETCH заголовков по UID (%d шт.) на %s (юзер %s): %w", end-start, cl.server, cl.user, err)
+			return nil, fmt.Errorf("FETCH headers by UID (%d of them) on %s (user %s): %w", end-start, cl.server, cl.user, err)
 		}
 	}
 	return out, nil
 }
 
-// FetchFullLiteral возвращает письмо целиком (заголовки + тело) по UID как
-// imap.Literal. go-imap v1 всё равно буферизует литерал в памяти, но так мы не
-// делаем поверх этого ещё одну копию (io.ReadAll).
+// FetchFullLiteral returns the whole message (headers + body) by UID as an
+// imap.Literal. go-imap v1 buffers the literal in memory anyway, but this way we
+// avoid one more copy (io.ReadAll) on top of that.
 func (cl *Client) FetchFullLiteral(uid uint32) (imap.Literal, error) {
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uid)
@@ -305,31 +309,32 @@ func (cl *Client) FetchFullLiteral(uid uint32) (imap.Literal, error) {
 		}
 	}
 	if err := <-done; err != nil {
-		return nil, fmt.Errorf("FETCH тела uid=%d на %s (юзер %s): %w", uid, cl.server, cl.user, err)
+		return nil, fmt.Errorf("FETCH body uid=%d on %s (user %s): %w", uid, cl.server, cl.user, err)
 	}
 	if lit == nil {
-		return nil, fmt.Errorf("письмо uid=%d не найдено на %s (юзер %s)", uid, cl.server, cl.user)
+		return nil, fmt.Errorf("message uid=%d not found on %s (user %s)", uid, cl.server, cl.user)
 	}
 	return lit, nil
 }
 
-// Append дописывает письмо в папку, сохраняя флаги и внутреннюю дату оригинала.
+// Append adds a message to a folder, preserving the original flags and internal
+// date.
 func (cl *Client) Append(folder string, flags []string, date time.Time, body []byte) error {
 	_, err := cl.AppendLiteral(folder, flags, date, bytes.NewBuffer(body))
 	return err
 }
 
-// AppendLiteral дописывает письмо (переданное как imap.Literal) и пытается
-// вернуть присвоенный ему UID из ответа [APPENDUID] (UIDPLUS, RFC 4315). Если
-// сервер его не поддерживает - uid == 0 и ошибки нет.
+// AppendLiteral adds a message (passed as an imap.Literal) and tries to return
+// the UID assigned to it from the [APPENDUID] response (UIDPLUS, RFC 4315). If
+// the server does not support it - uid == 0 and no error.
 func (cl *Client) AppendLiteral(folder string, flags []string, date time.Time, msg imap.Literal) (uint32, error) {
 	cmd := &commands.Append{Mailbox: folder, Flags: flags, Date: date, Message: msg}
 	status, err := cl.c.Execute(cmd, nil)
 	if err != nil {
-		return 0, fmt.Errorf("APPEND в %q на %s (юзер %s): %w", folder, cl.server, cl.user, err)
+		return 0, fmt.Errorf("APPEND to %q on %s (user %s): %w", folder, cl.server, cl.user, err)
 	}
 	if err := status.Err(); err != nil {
-		return 0, fmt.Errorf("APPEND в %q на %s (юзер %s): %w", folder, cl.server, cl.user, err)
+		return 0, fmt.Errorf("APPEND to %q on %s (user %s): %w", folder, cl.server, cl.user, err)
 	}
 	if status.Code == "APPENDUID" && len(status.Arguments) == 2 {
 		if uid, err := imap.ParseNumber(status.Arguments[1]); err == nil {

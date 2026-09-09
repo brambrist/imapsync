@@ -6,17 +6,17 @@ import (
 	"syscall"
 )
 
-// OpenExclusive открывает БД и берёт эксклюзивную advisory-блокировку на
-// отдельном lock-файле (<path>.lock). Нужна демону: два процесса на одну БД
-// побьют таблицы состояния и статусов. Блокировка снимается в Close.
+// OpenExclusive opens the DB and takes an exclusive advisory lock on a separate
+// lock file (<path>.lock). The daemon needs it: two processes on one DB would
+// corrupt the state and status tables. The lock is released in Close.
 func OpenExclusive(path string) (*Store, error) {
 	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("создание lock-файла %s.lock: %w", path, err)
+		return nil, fmt.Errorf("creating lock file %s.lock: %w", path, err)
 	}
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = lf.Close()
-		return nil, fmt.Errorf("БД %s уже используется другим процессом (не удалось взять %s.lock): %w", path, path, err)
+		return nil, fmt.Errorf("DB %s is already in use by another process (could not take %s.lock): %w", path, path, err)
 	}
 
 	st, err := Open(path)

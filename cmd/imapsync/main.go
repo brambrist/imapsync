@@ -1,15 +1,16 @@
-// Команда imapsync: демон двусторонней синхронизации папок между двумя IMAP.
+// Command imapsync: a two-way folder synchronization daemon between two IMAP
+// (or Maildir / EWS) endpoints.
 //
-// Подкоманды:
+// Subcommands:
 //
-//	imapsync run -config cfg.yaml              запуск демона
+//	imapsync run -config cfg.yaml              run the daemon
 //	imapsync db-add-user  -db x.db -name ... -a ... -b ... [-disabled]
 //	imapsync db-add-folder -db x.db -a ... -b ...
 //	imapsync db-import-yaml -db x.db -config cfg.yaml
 //	imapsync db-import-csv  -db x.db [-users u.csv] [-folders f.csv]
 //	imapsync db-list -db x.db
 //
-// Без подкоманды подразумевается run.
+// Without a subcommand, run is assumed.
 package main
 
 import (
@@ -54,13 +55,13 @@ func main() {
 		usage()
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "неизвестная подкоманда %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n", cmd)
 		usage()
 		os.Exit(2)
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ошибка: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -68,25 +69,25 @@ func main() {
 func isFlag(s string) bool { return len(s) > 0 && s[0] == '-' }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `imapsync - двусторонний синхронизатор папок IMAP
+	fmt.Fprint(os.Stderr, `imapsync - a two-way folder synchronizer
 
-Использование:
+Usage:
   imapsync run -config cfg.yaml
   imapsync db-add-user     -db x.db -name ivanov -a ivanov@a -b ivanov@b [-disabled]
-  imapsync db-add-folder   -db x.db -a Sent -b "Отправленные"
+  imapsync db-add-folder   -db x.db -a Sent -b "Sent Items"
   imapsync db-import-yaml   -db x.db -config cfg.yaml
   imapsync db-import-csv    -db x.db [-users users.csv] [-folders folders.csv]
   imapsync db-list         -db x.db
   imapsync db-history      -db x.db -user ivanov [-limit 20]
-  imapsync db-remove-user  -db x.db -name ivanov      (удаляет юзера + его состояние)
-  imapsync db-remove-folder -db x.db -a Sent -b "Отправленные"
-  imapsync db-forget-user  -db x.db -name ivanov      (сброс кэша/статуса, юзер остаётся)
-  imapsync db-resume-user  -db x.db -name ivanov      (сброс серии ошибок, снять стоп-синк)
+  imapsync db-remove-user  -db x.db -name ivanov      (removes the user + its state)
+  imapsync db-remove-folder -db x.db -a Sent -b "Sent Items"
+  imapsync db-forget-user  -db x.db -name ivanov      (reset cache/status, user stays)
+  imapsync db-resume-user  -db x.db -name ivanov      (reset error streak, lift the sync stop)
   imapsync db-vacuum       -db x.db
 
-CSV-форматы:
-  users:   name,user_a,user_b[,enabled]   (enabled: 1/0, true/false; по умолчанию 1)
+CSV formats:
+  users:   name,user_a,user_b[,enabled]   (enabled: 1/0, true/false; default 1)
   folders: folder_a,folder_b
-Строки, начинающиеся с '#', и заголовок (name.../folder_a...) пропускаются.
+Lines starting with '#' and the header row (name.../folder_a...) are skipped.
 `)
 }

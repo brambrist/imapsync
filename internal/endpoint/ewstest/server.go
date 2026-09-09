@@ -1,5 +1,5 @@
-// Package ewstest - минимальный in-memory EWS-сервер для тестов
-// (FindFolder / FindItem / GetItem / CreateItem). Не для продакшена.
+// Package ewstest is a minimal in-memory EWS server for tests
+// (FindFolder / FindItem / GetItem / CreateItem). Not for production.
 package ewstest
 
 import (
@@ -17,14 +17,14 @@ import (
 	"testing"
 )
 
-// Server - фейковый EWS с хранилищем писем в памяти.
+// Server is a fake EWS with an in-memory message store.
 type Server struct {
 	URL string
 
 	mu      sync.Mutex
 	items   map[string][]byte
 	next    int
-	LastImp string // последний ExchangeImpersonation
+	LastImp string // last ExchangeImpersonation
 }
 
 var (
@@ -32,8 +32,8 @@ var (
 	impRe    = regexp.MustCompile(`<t:PrimarySmtpAddress>([^<]+)</t:PrimarySmtpAddress>`)
 )
 
-// New поднимает фейковый сервер и регистрирует его остановку через t.Cleanup.
-// seed - начальные письма (id -> сырой RFC822).
+// New starts a fake server and registers its shutdown via t.Cleanup.
+// seed - the initial messages (id -> raw RFC822).
 func New(t *testing.T, seed map[string]string) *Server {
 	t.Helper()
 	s := &Server{items: map[string][]byte{}}
@@ -46,14 +46,14 @@ func New(t *testing.T, seed map[string]string) *Server {
 	return s
 }
 
-// Count - число писем на сервере.
+// Count is the number of messages on the server.
 func (s *Server) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.items)
 }
 
-// Add кладёт письмо напрямую (имитация внешней доставки).
+// Add stores a message directly (simulating external delivery).
 func (s *Server) Add(id, raw string) {
 	s.mu.Lock()
 	s.items[id] = []byte(raw)
@@ -96,7 +96,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		data, _ := base64.StdEncoding.DecodeString(tagText(body, "MimeContent"))
 		s.mu.Lock()
 		s.next++
-		id := fmt.Sprintf("AAMk-%d==", s.next) // похоже на настоящий EWS ItemId (base64-подобный)
+		id := fmt.Sprintf("AAMk-%d==", s.next) // looks like a real EWS ItemId (base64-ish)
 		s.items[id] = data
 		s.mu.Unlock()
 		io.WriteString(w, wrap(fmt.Sprintf(`<m:CreateItemResponse><m:ResponseMessages><m:CreateItemResponseMessage ResponseClass="Success">
