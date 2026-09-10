@@ -6,11 +6,9 @@ PKG     := ./cmd/imapsync
 GOFLAGS := -trimpath
 LDFLAGS := -s -w
 
-export CGO_ENABLED := 0
-
 .PHONY: build
-build: ## build the stripped static binary
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BIN) $(PKG)
+build: ## build the stripped static binary (no CGO)
+	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BIN) $(PKG)
 
 .PHONY: test
 test: ## run all tests with the race detector
