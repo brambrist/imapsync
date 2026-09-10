@@ -101,8 +101,10 @@ v6 (all pure Go, no CGO).
 
 ```sh
 imapsync run -config config.yaml
+imapsync -h                  # subcommand list; "imapsync <cmd> -h" for a command's flags
 ```
 
+`run` is the default subcommand, so `imapsync -config config.yaml` also works.
 The daemon runs full sync cycles with a `sync_interval` pause between them, and
 shuts down on SIGINT/SIGTERM (users in progress are finished to a checkpoint).
 

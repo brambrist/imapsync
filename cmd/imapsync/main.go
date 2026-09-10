@@ -10,16 +10,26 @@
 //	imapsync db-import-csv  -db x.db [-users u.csv] [-folders f.csv]
 //	imapsync db-list -db x.db
 //
-// Without a subcommand, run is assumed.
+// Without a subcommand, run is assumed. "imapsync -h" prints this list; "-h" on
+// any subcommand prints that subcommand's flags.
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 )
 
 func main() {
 	args := os.Args[1:]
+
+	if len(args) > 0 && isHelpFlag(args[0]) {
+		usage(os.Stdout)
+		return
+	}
+
 	cmd := "run"
 	if len(args) > 0 && !isFlag(args[0]) {
 		cmd, args = args[0], args[1:]
@@ -51,15 +61,15 @@ func main() {
 		err = cmdDBHistory(args)
 	case "db-vacuum":
 		err = cmdDBVacuum(args)
-	case "help", "-h", "--help":
-		usage()
-		return
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n", cmd)
-		usage()
+		usage(os.Stderr)
 		os.Exit(2)
 	}
 
+	if errors.Is(err, flag.ErrHelp) {
+		return // "-h" / "-help" on a subcommand: flag already printed its options
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -68,8 +78,12 @@ func main() {
 
 func isFlag(s string) bool { return len(s) > 0 && s[0] == '-' }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `imapsync - a two-way folder synchronizer
+func isHelpFlag(s string) bool {
+	return s == "-h" || s == "-help" || s == "--help" || s == "help"
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `imapsync - a two-way folder synchronizer
 
 Usage:
   imapsync run -config cfg.yaml
