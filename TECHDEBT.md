@@ -14,10 +14,11 @@ consecutive errors (lift with `db-resume-user`); `direction` config knob +
 ### A1. [DONE] Variable synchronization sources
 
 Package `internal/endpoint`: `Backend` (session factory) + `Endpoint`
-(`Select` / `ListIDs` / `FetchMeta` / `Open` / `Append` / `Close`). The `syncer`
-works only through these. Implementations: `imap.go` (on top of `mailbox.Client`),
-`maildir.go`, `ews.go`. The message ID and validity token are strings.
-`config.Server.Type` (`"" | imap | maildir | ews`).
+(`Select` / `ListIDs` / `FetchMeta` / `Open` / `Append` / `ReadOnly` / `Close`).
+The `syncer` works only through these. Implementations: `imap.go` (on top of
+`mailbox.Client`), `maildir.go`, `ews.go`, `pst.go` (see A3). The message ID and
+validity token are strings. `config.Server.Type` (`"" | imap | maildir | ews |
+pst`).
 
 EWS - what's left to polish:
 
@@ -103,6 +104,52 @@ Duplicate the `db-*` commands over HTTP. Assessment: reasonable, but not now.
   more valuable than a mutation API.
 - **Effort estimate:** ~1 day (hot-reload + unix socket + tests); TCP+auth on
   top.
+
+### A4. Full-mailbox sync with folder hierarchy
+
+Today the syncer only walks an explicit `folders: [{a, b}]` list. "Sync the
+whole mailbox" means adding folder discovery + pairing + creation on top of the
+existing per-folder engine; the dedup/copy core does not change.
+
+Already in place to build on: `mailbox.Client.listFolders` (`LIST "" "*"`,
+cached, with delimiter + SPECIAL-USE attributes), `ResolveFolder` (exact ->
+SPECIAL-USE -> case-insensitive), the Maildir endpoint creating subfolders on
+`Select`, the PST endpoint walking a full tree.
+
+Plan:
+
+- **`Endpoint.ListFolders() ([]FolderInfo, error)`** - `{Name, Delimiter,
+  SpecialUse, Selectable}`. IMAP: from the LIST cache. Maildir: walk `.sub`
+  dirs. EWS: `FindFolder` deep traversal filtered to `IPF.Note` (skip
+  Calendar/Contacts/Tasks/search folders). PST: `WalkFolders` (done).
+- **`Endpoint.CreateFolder(name string) error`** - IMAP `CREATE`, Maildir
+  `MkdirAll`, EWS `CreateFolder`; PST returns an error (read-only, same pattern
+  as `Append`).
+- **A pairing pass** (pool or syncer): per user list both sides, match folders,
+  create the missing ones on the writable side(s) honouring `direction`, then
+  run the existing `syncPair` per matched pair.
+- **Config:** `folders: "*"` (or `sync_all_folders: true`) with
+  `folder_exclude: ["Trash", "Junk", "\\Junk"]` and optional `folder_include`
+  globs. Explicit pairs stay as an override.
+
+The hard part (needs testing against a real Dovecot + Exchange pair):
+
+- **Delimiter translation.** Dovecot `/` or `.`, Exchange `/`, Maildir++ `.`,
+  some servers nest under `INBOX.`. `INBOX/Projects/Q1` on A must become
+  `INBOX.Projects.Q1` on B. The LIST delimiter of each side makes this
+  mechanical once discovered.
+- **SPECIAL-USE pairing.** "Sent" <-> "Sent Items" <-> localized names must pair
+  by the `\Sent` attribute, not the name. Same for Drafts/Trash/Junk/Archive.
+- **Namespace prefixes.** Strip / add a leading `INBOX.` where a server puts
+  everything under INBOX.
+- **Renames** look like delete + create to an append-only sync - out of scope;
+  a periodic full rescan converges eventually.
+
+Suggested phasing: (1) `ListFolders`/`CreateFolder` on all four endpoints +
+`folders: "*"` + exclude list + delimiter translation, same-name assumption
+(~1-1.5 d); (2) SPECIAL-USE pairing + namespace prefixes + EWS folder filtering,
+tested against Dovecot + Exchange (~1-2 d); (3) subscription sync, per-user
+folder overrides (optional).
 
 ## Critical before production
 
