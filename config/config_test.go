@@ -140,6 +140,62 @@ func TestDirectionDefaultAndValidation(t *testing.T) {
 	}
 }
 
+func TestPSTEndpointValidation(t *testing.T) {
+	base := `
+server_a:
+  type: pst
+  root: /var/archives/%u.pst
+server_b:
+  host: b.example
+  master_user: m
+  master_pass: p
+folders:
+  - a: Sent Items
+    b: Sent
+users:
+  - {name: u1, user_a: u1@a, user_b: u1@b}
+  - {name: u2, user_a: u2@a, user_b: u2@b}
+workers: 1
+sync_interval: 2m
+`
+	if _, err := Load(writeTemp(t, base)); err != nil {
+		t.Fatalf("pst source + imap target should be valid: %v", err)
+	}
+
+	// pst without a root
+	noRoot := `
+server_a: {type: pst}
+server_b: {host: b, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, noRoot)); err == nil {
+		t.Fatal("expected an error: type pst without root")
+	}
+
+	// direction points into the read-only PST
+	if _, err := Load(writeTemp(t, base+"\ndirection: b-to-a\n")); err == nil {
+		t.Fatal("expected an error: direction b-to-a into a read-only server_a")
+	}
+
+	// both sides read-only
+	bothPST := `
+server_a: {type: pst, root: /a/%u.pst}
+server_b: {type: pst, root: /b/%u.pst}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, bothPST)); err == nil {
+		t.Fatal("expected an error: both endpoints read-only")
+	}
+}
+
 func TestRejectsBadDuration(t *testing.T) {
 	bad := validCfg + "\nstats_interval: \"nonsense\"\n"
 	if _, err := Load(writeTemp(t, bad)); err == nil {

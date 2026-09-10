@@ -2,11 +2,12 @@
 
 Grouped by priority. `[DONE]` - closed; everything else is open.
 
-Closed: A1 (IMAP + Maildir + EWS), P1, P2, P4, P5, M1, M2, M3, M4, M7, M8, L4.
+Closed: A1 (IMAP + Maildir + EWS), A3 (PST import), P1, P2, P4, P5, M1, M2, M3,
+M4, M7, M8, L4.
 
 Added beyond the list: `max_fail_streak` - stop a user's sync after N
 consecutive errors (lift with `db-resume-user`); `direction` config knob +
-`Endpoint.ReadOnly()` (groundwork for read-only archive sources like PST).
+`Endpoint.ReadOnly()` (a read-only endpoint can only be a sync source).
 
 ## Architecture and extensibility
 
@@ -44,27 +45,43 @@ Maildir - what's left: does not read `subscriptions`; does not support the `:1,`
 info suffix or `;2,` (the non-Linux separator); `Open` reads the whole file
 (fine for local disk); `dovecot-uidvalidity` is not used.
 
-### A3. Local mail archives (PST/OST) as a read-only source
+### A3. [DONE] Local mail archives (PST/OST) as a read-only source
 
 Scoped to PST/OST (the "real" Outlook local archive; MSG/mbox/eml deferred).
-Import-only - `direction` + `Endpoint.ReadOnly()` are in place.
+Import-only: `type: pst`, `root` path template (`%u`/`%n`/`%d`), `ReadOnly()`
+returns true, `Append` errors, and `config.validateBase` rejects a `direction`
+that points into a read-only endpoint (and both-read-only).
 
-Plan:
+`internal/endpoint/pst.go` reads via `github.com/mooijtech/go-pst/v6` (pure Go).
+The message ID is the node identifier; validity is the constant `"pst"`. Each
+message is reserialized to RFC 822: the raw `PidTagTransportMessageHeaders`
+block when present (received mail, with the MIME framing headers stripped so the
+rebuilt body applies), otherwise headers synthesized from the MAPI properties
+(`From` from `PidTagSenderSmtpAddress` / sent-representing / sender, `Date` from
+`PidTagClientSubmitTime` -> delivery time, `Subject`, `PidTagInternetMessageId`).
+Body preference HTML > plaintext > decoded RTF; `PidTagBodyHtml` is frequently
+`PtypBinary`, so the raw property is read and charset-decoded (UTF-16 BOM / valid
+UTF-8 / Windows-1252). By-value attachments go into a `multipart/mixed`. Folder
+resolution: exact -> SPECIAL-USE candidates -> `INBOX` alias -> case-insensitive.
+Tests: `internal/endpoint/pst_test.go` + `internal/syncer/pst_test.go` against a
+gzipped copy of the public `support.pst` sample (`testdata/support.pst.gz`).
 
-- `internal/endpoint/pst.go` using `github.com/mooijtech/go-pst` (pure Go).
-  `type: pst`, path template (`%u`/`%n`/`%d`). Validity is a constant; the
-  message ID is the node ID.
-- The hard part: a MIME serializer (`internal/mapimime` or inline) that turns a
-  MAPI property bag + recipients + attachments into RFC822 - headers from
-  `PidTagSubject` / `PidTagClientSubmitTime` / `PidTagSenderSmtpAddress` /
-  `PidTagInternetMessageId`, body preference HTML > plaintext > de-RTF (lossy),
-  attachments base64 with Content-Disposition, embedded messages as
-  `message/rfc822`. For received mail `PidTagTransportMessageHeaders` gives the
-  raw header block directly.
+What's left to polish:
+
+- **DKIM / signatures break** - the body is rebuilt from properties, so the
+  original bytes (and any `DKIM-Signature` / S/MIME) no longer verify. Inherent
+  to reconstruction.
+- **RTF-only bodies** stay as raw RTF markup wrapped in `text/plain` (the LZFu
+  decoder is not an RTF-to-text/HTML converter). Rare for modern Outlook.
+- **Embedded messages / OLE attachments** (AttachMethod != 1) are skipped, not
+  emitted as `message/rfc822`.
+- **ANSI (32-bit) PST** is not supported by the reader (`go-pst` fails on the
+  folder-name property). Unicode PST/OST only.
 - Sent items from Outlook frequently lack a Message-ID -> the surrogate hash is
   the dedup key, which makes M5 (collisions) more pressing: consider folding the
   recipient list + a body hash into the surrogate for MAPI sources.
-- Tests need a small committed PST fixture (a few KB, Unicode, 2-3 messages).
+- `MessageCount == 0` on a folder is trusted (matches `go-pst`'s own iterator
+  guard); a folder with a wrong count would be read as empty.
 
 ### A2. REST API for management (idea, assessment)
 

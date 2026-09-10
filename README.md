@@ -14,8 +14,9 @@ read state and deletions are **not** synced.
   (`authcid` = master, `authzid` = target mailbox, master's password).
 - **Worker pool.** Fewer workers than users; workers pull users from a queue,
   one user is processed by one worker end to end.
-- **Multiple endpoint types.** Each side is `imap` (default), `maildir` or `ews`,
-  independently - so IMAP<->Maildir, Exchange<->Dovecot etc. all work.
+- **Multiple endpoint types.** Each side is `imap` (default), `maildir`, `ews` or
+  `pst`, independently - so IMAP<->Maildir, Exchange<->Dovecot etc. all work.
+  `pst` is a read-only local archive: a one-way import source (`direction`).
 - **Robust deduplication** that accounts for Exchange quirks (Message-ID may be
   absent or appear later) - see below.
 - **Config source** - YAML or a local SQLite DB (for large lists).
@@ -87,7 +88,8 @@ go build -o imapsync ./cmd/imapsync
 ```
 
 Needs Go 1.25+. Dependencies: `emersion/go-imap` v1, `emersion/go-message`,
-`emersion/go-sasl`, `gopkg.in/yaml.v3`, `modernc.org/sqlite` (pure Go, no CGO).
+`emersion/go-sasl`, `gopkg.in/yaml.v3`, `modernc.org/sqlite`, `mooijtech/go-pst`
+v6 (all pure Go, no CGO).
 
 ## Run
 
@@ -155,8 +157,8 @@ Server fields, timings and `workers` always come from YAML. The folder and user
 lists may live in SQLite.
 
 **Endpoint type** (`type`) is set per side independently - `imap` (default),
-`maildir` or `ews`. Mixed pairs work (Dovecot -> new IMAP migration, Exchange ->
-Dovecot, etc.):
+`maildir`, `ews` or `pst`. Mixed pairs work (Dovecot -> new IMAP migration,
+Exchange -> Dovecot, etc.):
 
 - `maildir` - `root`: path template to the Maildir (`%u` - whole
   `user_a`/`user_b`, `%n` - before `@`, `%d` - domain).
@@ -165,6 +167,9 @@ Dovecot, etc.):
   `ApplicationImpersonation` role; impersonation via the `ExchangeImpersonation`
   SOAP header. Auth: **Basic only** (O365 needs OAuth2 - see `TECHDEBT.md`).
   `\Seen` is carried, `INTERNALDATE` is not.
+- `pst` - `root`: path template to a local PST/OST archive (same placeholders).
+  **Read-only**: it can only be a sync source, so pair it with a writable
+  endpoint and set `direction: a-to-b` (or `b-to-a`). A one-way Outlook import.
 
 ```yaml
 server_a:
@@ -186,6 +191,15 @@ EWS: ID = `ItemId`; metadata from `InternetMessageHeaders` + `IsRead`; body -
 `GetItem` with `IncludeMimeContent`; write - `CreateItem` with `MimeContent`.
 Folder names -> distinguished folder id (`sentitems`, `inbox`, ...) or a
 `DisplayName` lookup via `FindFolder`.
+
+PST: read via `github.com/mooijtech/go-pst` (pure Go). ID = the message node
+identifier; validity is a constant. Each message is reserialized to RFC 822 -
+the raw `PidTagTransportMessageHeaders` block when present (received mail),
+otherwise headers synthesized from the MAPI properties (`From` /
+`PidTagClientSubmitTime` / `Subject` / `PidTagInternetMessageId`); body
+preference HTML > plaintext > decoded RTF; by-value attachments in a
+`multipart/mixed`. Folder names -> SPECIAL-USE candidates (`\Sent` tries
+"Sent Items" / "Sent" / "Sent Messages") -> case-insensitive.
 
 ### Config from SQLite
 
@@ -305,7 +319,7 @@ cmd/imapsync/        entry point: subcommand dispatch, daemon, signals
 config/              YAML config: loading, validation, defaults
 internal/
   endpoint/          the "sync endpoint" abstraction (Backend/Endpoint):
-                     imap.go (over mailbox), maildir.go, ews.go
+                     imap.go (over mailbox), maildir.go, ews.go, pst.go
   mailbox/           IMAP primitives over go-imap: connect+TLS (ctx-aware),
                      master login, resolve-folder, fetch/UID SEARCH, append; hashes
   dedup/             multi-key folder index, delta computation
@@ -332,5 +346,6 @@ that repeated passes are idempotent.
 
 The tech-debt list is in [`TECHDEBT.md`](TECHDEBT.md). Key open items: secrets
 only in plaintext YAML (no `${VAR}` / file / secret manager); EWS auth is Basic
-only (no OAuth2 for O365); `store` serializes all DB operations through one
-connection.
+only (no OAuth2 for O365); PST import reconstructs MIME from MAPI properties, so
+DKIM signatures break and RTF-only bodies stay as RTF markup; ANSI (older 32-bit)
+PST files are not supported by the reader.

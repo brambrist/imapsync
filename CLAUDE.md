@@ -71,6 +71,8 @@ imapsync/
       maildir.go             Maildir/Maildir++ on disk (type: maildir, root)
       ews.go                 Exchange Web Services (type: ews, SOAP, Basic auth)
       ewstest/               a fake EWS server for tests
+      pst.go                 local PST/OST archive, read-only (type: pst, root);
+                             one-way import source, MAPI -> RFC 822
     mailbox/
       client.go             IMAP primitives on top of go-imap v1: connect+TLS,
                              master login (impersonation), resolve/select/fetch/append
@@ -129,7 +131,9 @@ DB is open.
 
 See `config.example.yaml`. Server/timing/`workers` fields always come from YAML;
 the folder and user lists may live in SQLite (`source: sqlite`). `type` on each
-server is `imap` (default), `maildir` or `ews`, and may differ between sides.
+server is `imap` (default), `maildir`, `ews` or `pst`, and may differ between
+sides. `pst` is read-only (import source only); `direction` (`both` / `a-to-b` /
+`b-to-a`) controls which way missing messages are copied.
 
 ## Resolved design questions
 
@@ -170,6 +174,7 @@ github.com/emersion/go-message          // MIME/header parsing
 github.com/emersion/go-sasl             // SASL PLAIN with authzid (impersonation)
 gopkg.in/yaml.v3                         // config
 modernc.org/sqlite                      // local config/state DB (no CGO)
+github.com/mooijtech/go-pst/v6           // PST/OST reader for type: pst (no CGO)
 ```
 
 ## Conventions

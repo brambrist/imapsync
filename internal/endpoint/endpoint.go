@@ -74,9 +74,11 @@ func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecur
 		return newMaildirBackend(srv), nil
 	case config.EndpointEWS:
 		return newEWSBackend(srv, ioTimeout, insecureTLS, fetchBatch), nil
+	case config.EndpointPST:
+		return newPSTBackend(srv), nil
 	default:
-		return nil, fmt.Errorf("endpoint type %q is not supported (%q, %q, %q)",
-			srv.Type, config.EndpointIMAP, config.EndpointMaildir, config.EndpointEWS)
+		return nil, fmt.Errorf("endpoint type %q is not supported (%q, %q, %q, %q)",
+			srv.Type, config.EndpointIMAP, config.EndpointMaildir, config.EndpointEWS, config.EndpointPST)
 	}
 }
 

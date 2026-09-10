@@ -2,7 +2,7 @@
 # Impersonation: SASL PLAIN with authzid (authcid = master_user, authzid = user_a/user_b).
 
 server_a:
-  type: imap              # imap (default) | maildir | ews
+  type: imap              # imap (default) | maildir | ews | pst
   host: mail-a.corp.ru
   port: 993
   master_user: svc_sync
@@ -24,6 +24,13 @@ server_b:
 #   ews_url: https://exch.corp.ru/EWS/Exchange.asmx   # or just host
 #   master_user: svc_sync           # account with the ApplicationImpersonation role
 #   master_pass: "SECRET"           # auth: Basic only (O365 needs OAuth2)
+
+# A local PST/OST archive is a read-only source (one-way import). Set the other
+# side to a writable endpoint and direction to a-to-b (or b-to-a):
+# server_a:
+#   type: pst
+#   root: /var/archives/%d/%n.pst    # same %u/%n/%d placeholders as maildir
+# direction: a-to-b
 
 # direction: which way to copy missing messages. "both" (default), "a-to-b" or
 # "b-to-a". A read-only endpoint (e.g. a PST archive) forces the direction away

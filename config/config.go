@@ -37,6 +37,7 @@ const (
 	EndpointIMAP    = "imap"    // IMAP server with master access (default)
 	EndpointMaildir = "maildir" // local Maildir/Maildir++ on disk
 	EndpointEWS     = "ews"     // Exchange Web Services (SOAP), impersonation
+	EndpointPST     = "pst"     // local PST/OST archive, read-only (import source)
 )
 
 // Server describes one sync endpoint.
@@ -45,6 +46,8 @@ const (
 //     with authzid (authcid+password is the master, authzid is the target user).
 //   - type: maildir - Root: path template to the user's Maildir. Placeholders:
 //     %u (whole user_a/user_b), %n (local part before @), %d (domain).
+//   - type: pst - Root: path template to the user's PST/OST archive (same
+//     placeholders). Read-only: it can only be a sync source (one-way import).
 //   - type: ews - EWSUrl (or Host), MasterUser/MasterPass is a service account
 //     with the ApplicationImpersonation role; impersonation via the SOAP header
 //     ExchangeImpersonation (PrimarySmtpAddress = user_a/user_b). Auth: Basic.
@@ -288,6 +291,18 @@ func (c *Config) validateBase() error {
 			c.Direction, DirectionBoth, DirectionAToB, DirectionBToA)
 	}
 
+	// A read-only endpoint (currently only pst) can be a source but not a
+	// target. Both sides read-only leaves nothing to do.
+	if readOnlyType(c.ServerA.Type) && readOnlyType(c.ServerB.Type) {
+		return fmt.Errorf("both endpoints are read-only (type %q) - nothing to sync", c.ServerA.Type)
+	}
+	if readOnlyType(c.ServerA.Type) && c.Direction == DirectionBToA {
+		return fmt.Errorf("server_a is read-only (type %q) but direction is %q", c.ServerA.Type, DirectionBToA)
+	}
+	if readOnlyType(c.ServerB.Type) && c.Direction == DirectionAToB {
+		return fmt.Errorf("server_b is read-only (type %q) but direction is %q", c.ServerB.Type, DirectionAToB)
+	}
+
 	if c.Workers < 1 {
 		return fmt.Errorf("workers must be >= 1, got %d", c.Workers)
 	}
@@ -353,6 +368,10 @@ func validateServer(name string, s Server) error {
 		if strings.TrimSpace(s.Root) == "" {
 			return fmt.Errorf("%s: type maildir - root is not set (Maildir path template)", name)
 		}
+	case EndpointPST:
+		if strings.TrimSpace(s.Root) == "" {
+			return fmt.Errorf("%s: type pst - root is not set (PST/OST path template)", name)
+		}
 	case EndpointEWS:
 		if strings.TrimSpace(s.EWSUrl) == "" && strings.TrimSpace(s.Host) == "" {
 			return fmt.Errorf("%s: type ews - ews_url or host is required", name)
@@ -361,16 +380,22 @@ func validateServer(name string, s Server) error {
 			return fmt.Errorf("%s: type ews - master_user/master_pass are required (service account with ApplicationImpersonation)", name)
 		}
 	default:
-		return fmt.Errorf("%s: type %q is not supported (%q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS)
+		return fmt.Errorf("%s: type %q is not supported (%q, %q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS, EndpointPST)
 	}
 	return nil
 }
+
+// readOnlyType reports whether an endpoint type can only be a sync source
+// (Append is unsupported).
+func readOnlyType(t string) bool { return t == EndpointPST }
 
 // Addr returns a human-readable endpoint address for logs.
 func (s Server) Addr() string {
 	switch s.Type {
 	case EndpointMaildir:
 		return "maildir:" + s.Root
+	case EndpointPST:
+		return "pst:" + s.Root
 	case EndpointEWS:
 		if s.EWSUrl != "" {
 			return s.EWSUrl
