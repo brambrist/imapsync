@@ -25,6 +25,11 @@ server_b:
 #   master_user: svc_sync           # account with the ApplicationImpersonation role
 #   master_pass: "SECRET"           # auth: Basic only (O365 needs OAuth2)
 
+# direction: which way to copy missing messages. "both" (default), "a-to-b" or
+# "b-to-a". A read-only endpoint (e.g. a PST archive) forces the direction away
+# from it regardless. Typical for a one-way import.
+direction: both
+
 # Source of the folders/users lists: "yaml" (default) or "sqlite".
 # With "sqlite" the folders/users sections below are optional and ignored;
 # data is read from sqlite_path. Populate the DB with the imapsync db-* commands.

@@ -243,6 +243,8 @@ func (e *maildirEndpoint) Append(flags []string, date time.Time, body Literal) (
 	return unique, nil
 }
 
+func (e *maildirEndpoint) ReadOnly() bool { return false }
+
 func (e *maildirEndpoint) Close() {}
 
 // --- helpers ---

@@ -79,6 +79,13 @@ const (
 	SourceSQLite = "sqlite" // users/folders come from the local sqlite DB
 )
 
+// Sync directions.
+const (
+	DirectionBoth = "both"   // copy missing messages A->B and B->A (default)
+	DirectionAToB = "a-to-b" // copy A->B only (e.g. import an archive into a server)
+	DirectionBToA = "b-to-a" // copy B->A only
+)
+
 // Config is the root config.
 type Config struct {
 	ServerA Server `yaml:"server_a"`
@@ -126,6 +133,11 @@ type Config struct {
 	// UID SEARCH, headers are fetched only for new messages, and parsing is
 	// cached in sqlite (sqlite_path). Requires sqlite_path to be set.
 	StateCache bool `yaml:"state_cache"`
+
+	// Direction - which way to copy missing messages: "both" (default),
+	// "a-to-b" or "b-to-a". A read-only endpoint (e.g. type: pst) also forces
+	// the direction away from it regardless of this setting.
+	Direction string `yaml:"direction"`
 }
 
 // defaults, applied to zero values after parsing.
@@ -228,6 +240,9 @@ func (c *Config) applyDefaults() {
 	if c.Source == "" {
 		c.Source = SourceYAML
 	}
+	if c.Direction == "" {
+		c.Direction = DirectionBoth
+	}
 	if c.ConnectRetries == 0 {
 		c.ConnectRetries = defaultConnectRetries
 	}
@@ -264,6 +279,13 @@ func (c *Config) validateBase() error {
 
 	if c.StateCache && strings.TrimSpace(c.SQLitePath) == "" {
 		return fmt.Errorf("state_cache: true - sqlite_path is required")
+	}
+
+	switch c.Direction {
+	case DirectionBoth, DirectionAToB, DirectionBToA:
+	default:
+		return fmt.Errorf("unknown direction %q (allowed: %q, %q, %q)",
+			c.Direction, DirectionBoth, DirectionAToB, DirectionBToA)
 	}
 
 	if c.Workers < 1 {

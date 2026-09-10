@@ -110,6 +110,37 @@ func TestSyncUserMaildirToMaildir(t *testing.T) {
 	}
 }
 
+func TestSyncUserDirectionAToB(t *testing.T) {
+	rootA := makeMaildir(t)
+	rootB := makeMaildir(t)
+	seedMaildir(t, rootA, "on A", "a-only@corp")
+	seedMaildir(t, rootB, "on B", "b-only@corp")
+
+	cfg := &config.Config{
+		ServerA:        config.Server{Type: config.EndpointMaildir, Root: rootA},
+		ServerB:        config.Server{Type: config.EndpointMaildir, Root: rootB},
+		FetchBatchSize: 10,
+		HashHeader:     "X-Imapsync-Hash",
+		Folders:        []config.FolderPair{{A: "INBOX", B: "INBOX"}},
+		Direction:      config.DirectionAToB,
+	}
+
+	coll := stats.New()
+	coll.BeginCycle()
+	New(cfg, coll, t.Logf).SyncUser(context.Background(), config.User{Name: "u", UserA: "u", UserB: "u"})
+
+	if r := coll.Snapshot(); r.Total.CopiedAToB != 1 || r.Total.CopiedBToA != 0 || r.Total.Errors != 0 {
+		t.Fatalf("counters: %+v", r.Total)
+	}
+	// B gained the A message; A is unchanged
+	if got := maildirMsgIDs(t, rootB); fmt.Sprint(got) != fmt.Sprint([]string{"a-only@corp", "b-only@corp"}) {
+		t.Errorf("B = %v", got)
+	}
+	if got := maildirMsgIDs(t, rootA); fmt.Sprint(got) != fmt.Sprint([]string{"a-only@corp"}) {
+		t.Errorf("A changed despite direction a-to-b: %v", got)
+	}
+}
+
 func TestSyncUserIMAPToMaildir(t *testing.T) {
 	cert := selfSignedCert(t)
 	srvA := startIMAP(t, cert) // IMAP: INBOX with its original message + our own

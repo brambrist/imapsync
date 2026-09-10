@@ -128,4 +128,6 @@ func (e *imapEndpoint) Append(flags []string, date time.Time, body Literal) (str
 	return uidStr(uid), nil
 }
 
+func (e *imapEndpoint) ReadOnly() bool { return false }
+
 func (e *imapEndpoint) Close() { e.cl.Logout() }

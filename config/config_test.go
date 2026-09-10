@@ -124,6 +124,22 @@ func TestStateCacheRequiresSQLitePath(t *testing.T) {
 	}
 }
 
+func TestDirectionDefaultAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validCfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Direction != DirectionBoth {
+		t.Errorf("direction default: got %q", cfg.Direction)
+	}
+	if _, err := Load(writeTemp(t, validCfg+"\ndirection: sideways\n")); err == nil {
+		t.Fatal("expected an error for an unknown direction")
+	}
+	if _, err := Load(writeTemp(t, validCfg+"\ndirection: a-to-b\n")); err != nil {
+		t.Fatalf("a-to-b should be valid: %v", err)
+	}
+}
+
 func TestRejectsBadDuration(t *testing.T) {
 	bad := validCfg + "\nstats_interval: \"nonsense\"\n"
 	if _, err := Load(writeTemp(t, bad)); err == nil {

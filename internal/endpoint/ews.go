@@ -406,6 +406,8 @@ func (e *ewsEndpoint) Append(flags []string, _ time.Time, body Literal) (string,
 	return "", nil
 }
 
+func (e *ewsEndpoint) ReadOnly() bool { return false }
+
 func (e *ewsEndpoint) Close() {}
 
 // --- helpers ---

@@ -49,6 +49,10 @@ type Endpoint interface {
 	// ("" if the transport does not report it - then it is picked up next cycle).
 	Append(flags []string, date time.Time, body Literal) (string, error)
 
+	// ReadOnly reports whether Append is unsupported for this transport (e.g. a
+	// PST archive). The syncer will not copy toward a read-only endpoint.
+	ReadOnly() bool
+
 	// Close closes the session.
 	Close()
 }

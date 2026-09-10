@@ -29,6 +29,9 @@ type Syncer struct {
 	state    *store.Store // != nil => incremental reconciliation via cache and user_status writes
 	backendA endpoint.Backend
 	backendB endpoint.Backend
+
+	dirAToB bool // config allows copying A->B
+	dirBToA bool // config allows copying B->A
 }
 
 // New creates a syncer that does a full folder reconciliation every cycle.
@@ -54,6 +57,8 @@ func NewWithState(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st
 		cfg: cfg, stats: coll, logf: logf, state: st,
 		backendA: mk(cfg.ServerA),
 		backendB: mk(cfg.ServerB),
+		dirAToB:  cfg.Direction != config.DirectionBToA,
+		dirBToA:  cfg.Direction != config.DirectionAToB,
 	}
 }
 
@@ -229,6 +234,19 @@ func (sess *session) syncPair(fp config.FolderPair) error {
 	skipped := (idxA.Len() - len(missingOnB)) + (idxB.Len() - len(missingOnA))
 	if skipped > 0 {
 		us.IncSkippedDup(skipped)
+	}
+
+	// A direction is done only if the config allows it and the target endpoint
+	// is writable.
+	allowAToB := s.dirAToB && !sess.b.ReadOnly()
+	allowBToA := s.dirBToA && !sess.a.ReadOnly()
+	if !allowAToB && len(missingOnB) > 0 {
+		s.logf("user %s, %q -> %q: %d message(s) not copied (direction disabled or target read-only)", u.Name, folderA, folderB, len(missingOnB))
+		missingOnB = nil
+	}
+	if !allowBToA && len(missingOnA) > 0 {
+		s.logf("user %s, %q -> %q: %d message(s) not copied (direction disabled or target read-only)", u.Name, folderB, folderA, len(missingOnA))
+		missingOnA = nil
 	}
 
 	pair := store.PairKey(fp.A, fp.B)
