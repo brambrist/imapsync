@@ -30,7 +30,7 @@ read state and deletions are **not** synced.
    ```sh
    git clone git@github.com:brambrist/imapsync.git
    cd imapsync
-   go build -o imapsync ./cmd/imapsync
+   make build           # or: go build -o imapsync ./cmd/imapsync
    ```
 
 2. **Make a config** from the example and fill in your servers, master
@@ -71,10 +71,13 @@ rather than YAML: see [Config from SQLite](#config-from-sqlite).
 ### Developer onboarding
 
 ```sh
-go test -race ./...      # all tests, including integration ones (in-memory IMAP+TLS, fake EWS)
-go vet ./...
-gofmt -l .               # must be empty
+make check               # gofmt check + go vet + go test -race ./...
+make help                # list all targets
 ```
+
+Individual steps: `go test -race ./...` (all tests, including integration ones -
+in-memory IMAP+TLS, fake EWS, a gzipped sample PST), `go vet ./...`, `gofmt -l .`
+(must be empty).
 
 Entry point - `cmd/imapsync` (subcommand dispatch). Sync logic - in
 `internal/syncer`; deduplication - `internal/dedup` + `internal/mailbox/message.go`;
@@ -84,8 +87,11 @@ module, comments and code in English.
 ## Build
 
 ```sh
-go build -o imapsync ./cmd/imapsync
+make build               # CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"
 ```
+
+Produces a stripped, statically linked `imapsync` with no shared-library
+dependencies. Plain `go build -o imapsync ./cmd/imapsync` works too.
 
 Needs Go 1.25+. Dependencies: `emersion/go-imap` v1, `emersion/go-message`,
 `emersion/go-sasl`, `gopkg.in/yaml.v3`, `modernc.org/sqlite`, `mooijtech/go-pst`
