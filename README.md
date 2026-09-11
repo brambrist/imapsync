@@ -238,6 +238,63 @@ preference HTML > plaintext > decoded RTF; by-value attachments in a
 `multipart/mixed`. Folder names -> SPECIAL-USE candidates (`\Sent` tries
 "Sent Items" / "Sent" / "Sent Messages") -> case-insensitive.
 
+### Exchange service account setup
+
+Commands for the on-prem Exchange side of `master_user`/`master_pass`, run in
+the Exchange Management Shell.
+
+**EWS (`type: ews`, recommended for Exchange)** - impersonation via the
+`ApplicationImpersonation` management role:
+
+```powershell
+# 1. The service account needs a mailbox.
+New-Mailbox -Name "svc-imapsync" -UserPrincipalName svc-imapsync@corp.local `
+  -OrganizationalUnit "Service Accounts" -Password (Read-Host -AsSecureString)
+
+# 2. Grant ApplicationImpersonation, org-wide:
+New-ManagementRoleAssignment -Name "imapsync-impersonation" `
+  -Role "ApplicationImpersonation" -User "svc-imapsync"
+
+# 2b. Recommended instead of org-wide: scope it to just the mailboxes imapsync
+#     touches (tag them first, e.g. via CustomAttribute1):
+New-ManagementScope -Name "imapsync-scope" `
+  -RecipientRestrictionFilter "CustomAttribute1 -eq 'imapsync'"
+New-ManagementRoleAssignment -Name "imapsync-impersonation" `
+  -Role "ApplicationImpersonation" -User "svc-imapsync" `
+  -CustomRecipientWriteScope "imapsync-scope"
+
+# 3. Verify:
+Get-ManagementRoleAssignment -RoleAssignee "svc-imapsync" | Format-List
+
+# 4. EWS virtual directory URL (goes into ews_url):
+Get-WebServicesVirtualDirectory | Format-List Name,InternalUrl,ExternalUrl
+```
+
+`master_user`/`master_pass` = `svc-imapsync`'s own credentials. Auth is
+**Basic only** here (on-prem); Exchange Online needs OAuth2, which this project
+does not implement yet (see `TECHDEBT.md`).
+
+**IMAP4 (`type: imap`)** - enable the protocol per mailbox and make sure the
+service is running:
+
+```powershell
+Set-CASMailbox -Identity ivanov@corp.local -ImapEnabled $true
+Set-Service MSExchangeIMAP4 -StartupType Automatic
+Start-Service MSExchangeIMAP4
+```
+
+**Exchange's own IMAP4 does not support Dovecot-style master-user
+impersonation** - there is no built-in equivalent of Dovecot's `master_user`
+(the authzid in `AUTHENTICATE PLAIN` is not honored as "log in as this other
+mailbox"). The `type: imap` master-login this project implements is built for
+Dovecot/Cyrus-style servers. Against Exchange:
+
+- **Multiple mailboxes -> use `type: ews` instead** (see above). This is the
+  supported way to access many mailboxes with one service account on Exchange.
+- **A single mailbox, no impersonation needed** - `type: imap` still works:
+  set `master_user`/`master_pass` to that mailbox's own credentials and
+  `user_a`/`user_b` to its own address.
+
 ### Config from SQLite
 
 ```yaml
