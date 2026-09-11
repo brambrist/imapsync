@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"os"
 	"path/filepath"
 	"testing"
@@ -193,6 +194,109 @@ workers: 1
 `
 	if _, err := Load(writeTemp(t, bothPST)); err == nil {
 		t.Fatal("expected an error: both endpoints read-only")
+	}
+}
+
+func TestParseTLSVersion(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    uint16
+		wantErr bool
+	}{
+		{"", 0, false},
+		{"1.0", tls.VersionTLS10, false},
+		{"tls1.0", tls.VersionTLS10, false},
+		{"1.1", tls.VersionTLS11, false},
+		{"1.2", tls.VersionTLS12, false},
+		{"1.3", tls.VersionTLS13, false},
+		{"sslv3", 0, true},
+		{"ssl", 0, true},
+		{"2.0", 0, true},
+		{"bogus", 0, true},
+	}
+	for _, c := range cases {
+		got, err := ParseTLSVersion(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseTLSVersion(%q): expected an error", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseTLSVersion(%q): unexpected error: %v", c.in, err)
+		}
+		if got != c.want {
+			t.Errorf("ParseTLSVersion(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestServerTLSConfig(t *testing.T) {
+	s := Server{Host: "mail.corp.ru", MinTLSVersion: "1.0", MaxTLSVersion: "1.1"}
+	cfg, err := s.TLSConfig(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServerName != "mail.corp.ru" {
+		t.Errorf("ServerName = %q", cfg.ServerName)
+	}
+	if cfg.MinVersion != tls.VersionTLS10 || cfg.MaxVersion != tls.VersionTLS11 {
+		t.Errorf("MinVersion=%d MaxVersion=%d", cfg.MinVersion, cfg.MaxVersion)
+	}
+	if cfg.InsecureSkipVerify {
+		t.Error("InsecureSkipVerify should follow the insecureTLS argument")
+	}
+
+	if _, err := (Server{MinTLSVersion: "nonsense"}).TLSConfig(false); err == nil {
+		t.Fatal("expected an error for a bad min_tls_version")
+	}
+}
+
+func TestTLSVersionValidation(t *testing.T) {
+	// a legacy server (e.g. an unpatched Exchange 2013 stuck on TLS 1.0/1.1)
+	// validates fine
+	ok := `
+server_a:
+  host: a.example
+  master_user: m
+  master_pass: p
+  min_tls_version: "1.0"
+  max_tls_version: "1.1"
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, ok)); err != nil {
+		t.Fatalf("min/max_tls_version should be valid: %v", err)
+	}
+
+	bad := `
+server_a: {host: a.example, master_user: m, master_pass: p, min_tls_version: bogus}
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, bad)); err == nil {
+		t.Fatal("expected an error for an unknown min_tls_version")
+	}
+
+	inverted := `
+server_a: {host: a.example, master_user: m, master_pass: p, min_tls_version: "1.2", max_tls_version: "1.0"}
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, inverted)); err == nil {
+		t.Fatal("expected an error: min_tls_version above max_tls_version")
 	}
 }
 

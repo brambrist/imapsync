@@ -3,6 +3,7 @@ package endpoint
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"net/mail"
 	"slices"
@@ -104,6 +105,50 @@ func TestEWSAppendRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(id, "==") {
 		t.Errorf("ID does not look like an EWS ItemId: %q", id)
+	}
+}
+
+func TestEWSRejectsLegacyTLSWithoutTheKnob(t *testing.T) {
+	srv := ewstest.NewTLS(t, nil, &tls.Config{MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11})
+	b, err := NewBackend(config.Server{Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw"},
+		0, 5*time.Second, true, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := b.Connect(context.Background(), "u@d")
+	if err != nil {
+		t.Fatal(err) // Connect itself does not dial - the handshake happens on first use
+	}
+	defer ep.Close()
+	// Select("INBOX") is a distinguished folder and makes no network call; the
+	// TLS handshake happens on the first real request.
+	if _, _, err := ep.Select("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ep.ListIDs(); err == nil {
+		t.Fatal("expected a TLS handshake failure against a TLS-1.0/1.1-only EWS server")
+	}
+}
+
+func TestEWSHonoursMinMaxTLSVersion(t *testing.T) {
+	srv := ewstest.NewTLS(t, nil, &tls.Config{MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11})
+	b, err := NewBackend(config.Server{
+		Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw",
+		MinTLSVersion: "1.0", MaxTLSVersion: "1.1",
+	}, 0, 5*time.Second, true, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := b.Connect(context.Background(), "u@d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Close()
+	if _, _, err := ep.Select("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ep.ListIDs(); err != nil {
+		t.Fatalf("min_tls_version/max_tls_version should let the client reach a legacy EWS server: %v", err)
 	}
 }
 

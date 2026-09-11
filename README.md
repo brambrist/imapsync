@@ -179,6 +179,23 @@ Exchange -> Dovecot, etc.):
   **Read-only**: it can only be a sync source, so pair it with a writable
   endpoint and set `direction: a-to-b` (or `b-to-a`). A one-way Outlook import.
 
+**`min_tls_version`/`max_tls_version`** (per side, `imap` and `ews` only) bound
+the TLS protocol version - `"1.0"`, `"1.1"`, `"1.2"` or `"1.3"`. Both are
+optional; unset is effectively "TLS 1.2 minimum, no cap" (Go's default). Needed
+for a legacy server that never got the TLS 1.2 patch - e.g. an unpatched
+Exchange 2013 often maxes out at TLS 1.0/1.1 - while the other side of the sync
+stays on modern TLS:
+
+```yaml
+server_a:
+  type: ews
+  ews_url: https://exch2013.corp.ru/EWS/Exchange.asmx
+  min_tls_version: "1.0"
+  max_tls_version: "1.1"
+```
+
+SSLv3 is not supported - Go's TLS stack implements TLS only.
+
 ```yaml
 server_a:
   type: maildir

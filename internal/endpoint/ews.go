@@ -3,7 +3,6 @@ package endpoint
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -20,6 +19,7 @@ import (
 // the SOAP header ExchangeImpersonation. Authentication: HTTP Basic.
 type ewsBackend struct {
 	url         string
+	srv         config.Server // kept for TLSConfig (min/max TLS version)
 	user        string
 	pass        string
 	insecureTLS bool
@@ -35,15 +35,17 @@ func newEWSBackend(srv config.Server, ioTimeout time.Duration, insecureTLS bool,
 	if batch < 1 {
 		batch = 50
 	}
-	return &ewsBackend{url: url, user: srv.MasterUser, pass: srv.MasterPass, insecureTLS: insecureTLS, timeout: ioTimeout, batch: batch}
+	return &ewsBackend{url: url, srv: srv, user: srv.MasterUser, pass: srv.MasterPass, insecureTLS: insecureTLS, timeout: ioTimeout, batch: batch}
 }
 
 func (b *ewsBackend) Addr() string { return b.url }
 
 func (b *ewsBackend) Connect(_ context.Context, user string) (Endpoint, error) {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: b.insecureTLS}, //nolint:gosec
+	tlsCfg, err := b.srv.TLSConfig(b.insecureTLS)
+	if err != nil {
+		return nil, fmt.Errorf("ews %s: %w", b.url, err)
 	}
+	tr := &http.Transport{TLSClientConfig: tlsCfg}
 	cl := &ewsClient{
 		http:        &http.Client{Transport: tr, Timeout: b.timeout},
 		url:         b.url,

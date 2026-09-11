@@ -3,11 +3,13 @@
 Grouped by priority. `[DONE]` - closed; everything else is open.
 
 Closed: A1 (IMAP + Maildir + EWS), A3 (PST import), P1, P2, P4, P5, M1, M2, M3,
-M4, M7, M8, L4.
+M4, M6 (partially), M7, M8, L4.
 
 Added beyond the list: `max_fail_streak` - stop a user's sync after N
 consecutive errors (lift with `db-resume-user`); `direction` config knob +
-`Endpoint.ReadOnly()` (a read-only endpoint can only be a sync source).
+`Endpoint.ReadOnly()` (a read-only endpoint can only be a sync source);
+`min_tls_version`/`max_tls_version` per server (legacy servers like Exchange
+2013 stuck on TLS 1.0/1.1).
 
 ## Architecture and extensibility
 
@@ -219,9 +221,13 @@ Date+Subject+From: messages without a `Message-ID` and with identical fields
 (mailing lists, autoreplies) are treated as duplicates and not copied. CLAUDE.md
 allows extending the composition - not done.
 
-### M6. `insecure_tls` is global, not per-server
+### M6. [DONE, partially] `insecure_tls` is global, not per-server
 
-No STARTTLS (implicit TLS 993 only), no client certs, no pinning.
+`min_tls_version`/`max_tls_version` **[DONE]** are per-server (`Server.TLSConfig`,
+used by both `mailbox.Connect` and the EWS HTTP transport) - needed for a legacy
+server like an unpatched Exchange 2013 that maxes out at TLS 1.0/1.1, paired with
+a modern server on the other side. `insecure_tls` itself is still global, and
+there is still no STARTTLS (implicit TLS 993 only), no client certs, no pinning.
 
 ### M7. [DONE] `user_status` without history
 

@@ -4,6 +4,7 @@ package ewstest
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -36,13 +37,34 @@ var (
 // seed - the initial messages (id -> raw RFC822).
 func New(t *testing.T, seed map[string]string) *Server {
 	t.Helper()
+	s := newServer(seed)
+	httpSrv := httptest.NewServer(http.HandlerFunc(s.handle))
+	t.Cleanup(httpSrv.Close)
+	s.URL = httpSrv.URL
+	return s
+}
+
+// NewTLS is like New but serves HTTPS with a self-signed cert, restricted to
+// [tlsCfg.MinVersion, tlsCfg.MaxVersion] - for testing min_tls_version /
+// max_tls_version against a "legacy" server (e.g. TLS 1.0/1.1 only, like an
+// unpatched Exchange 2013). The client must use InsecureSkipVerify (the cert is
+// self-signed and not in any trust store).
+func NewTLS(t *testing.T, seed map[string]string, tlsCfg *tls.Config) *Server {
+	t.Helper()
+	s := newServer(seed)
+	httpSrv := httptest.NewUnstartedServer(http.HandlerFunc(s.handle))
+	httpSrv.TLS = tlsCfg
+	httpSrv.StartTLS()
+	t.Cleanup(httpSrv.Close)
+	s.URL = httpSrv.URL
+	return s
+}
+
+func newServer(seed map[string]string) *Server {
 	s := &Server{items: map[string][]byte{}}
 	for id, b := range seed {
 		s.items[id] = []byte(b)
 	}
-	httpSrv := httptest.NewServer(http.HandlerFunc(s.handle))
-	t.Cleanup(httpSrv.Close)
-	s.URL = httpSrv.URL
 	return s
 }
 

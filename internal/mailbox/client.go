@@ -6,7 +6,6 @@ package mailbox
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -45,9 +44,9 @@ func Connect(ctx context.Context, srv config.Server, targetUser string, dialTime
 	addr := srv.Addr()
 
 	dialer := &net.Dialer{Timeout: dialTimeout}
-	tlsCfg := &tls.Config{
-		ServerName:         srv.Host,
-		InsecureSkipVerify: insecureTLS, //nolint:gosec // controlled by the insecure_tls config
+	tlsCfg, err := srv.TLSConfig(insecureTLS)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to %s (user %s): %w", addr, targetUser, err)
 	}
 
 	imapCli, err := client.DialWithDialerTLS(dialer, addr, tlsCfg)

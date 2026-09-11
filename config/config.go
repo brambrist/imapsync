@@ -3,6 +3,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 	"strings"
@@ -51,14 +52,23 @@ const (
 //   - type: ews - EWSUrl (or Host), MasterUser/MasterPass is a service account
 //     with the ApplicationImpersonation role; impersonation via the SOAP header
 //     ExchangeImpersonation (PrimarySmtpAddress = user_a/user_b). Auth: Basic.
+//
+// MinTLSVersion/MaxTLSVersion bound the TLS protocol version for this server's
+// connection (imap and ews only). Both are optional; the Go default is
+// effectively "TLS 1.2 minimum, no cap". Needed for legacy servers that do not
+// speak TLS 1.2 - e.g. an unpatched Exchange 2013 often maxes out at TLS 1.0/1.1
+// - while the other side of the sync stays on modern TLS. SSLv3 is not
+// supported (Go's TLS stack implements TLS only, not SSL).
 type Server struct {
-	Type       string `yaml:"type"` // "" | "imap" | "maildir" | "ews"
-	Host       string `yaml:"host"`
-	Port       int    `yaml:"port"`
-	MasterUser string `yaml:"master_user"` // authcid for SASL PLAIN / Basic user for EWS
-	MasterPass string `yaml:"master_pass"` // master account password
-	Root       string `yaml:"root"`        // Maildir path template (type: maildir)
-	EWSUrl     string `yaml:"ews_url"`     // full EWS URL (else https://<host>/EWS/Exchange.asmx)
+	Type          string `yaml:"type"` // "" | "imap" | "maildir" | "ews" | "pst"
+	Host          string `yaml:"host"`
+	Port          int    `yaml:"port"`
+	MasterUser    string `yaml:"master_user"`     // authcid for SASL PLAIN / Basic user for EWS
+	MasterPass    string `yaml:"master_pass"`     // master account password
+	Root          string `yaml:"root"`            // Maildir/PST path template (type: maildir/pst)
+	EWSUrl        string `yaml:"ews_url"`         // full EWS URL (else https://<host>/EWS/Exchange.asmx)
+	MinTLSVersion string `yaml:"min_tls_version"` // "1.0" | "1.1" | "1.2" | "1.3"
+	MaxTLSVersion string `yaml:"max_tls_version"`
 }
 
 // FolderPair is an explicit mapping of a folder name on server A to one on
@@ -382,7 +392,67 @@ func validateServer(name string, s Server) error {
 	default:
 		return fmt.Errorf("%s: type %q is not supported (%q, %q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS, EndpointPST)
 	}
+
+	minV, err := ParseTLSVersion(s.MinTLSVersion)
+	if err != nil {
+		return fmt.Errorf("%s: min_tls_version: %w", name, err)
+	}
+	maxV, err := ParseTLSVersion(s.MaxTLSVersion)
+	if err != nil {
+		return fmt.Errorf("%s: max_tls_version: %w", name, err)
+	}
+	if minV != 0 && maxV != 0 && minV > maxV {
+		return fmt.Errorf("%s: min_tls_version (%s) is above max_tls_version (%s)", name, s.MinTLSVersion, s.MaxTLSVersion)
+	}
 	return nil
+}
+
+// ParseTLSVersion parses a config string ("1.0", "1.1", "1.2", "1.3" - "tls1.0"
+// etc. also accepted) into a crypto/tls version constant. An empty string means
+// "no explicit bound" (0, the Go default). SSLv3 is rejected with a clear
+// error: Go's TLS stack implements TLS only, not SSL.
+func ParseTLSVersion(raw string) (uint16, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "":
+		return 0, nil
+	case "1.0", "tls1.0", "tls1":
+		return tls.VersionTLS10, nil
+	case "1.1", "tls1.1":
+		return tls.VersionTLS11, nil
+	case "1.2", "tls1.2":
+		return tls.VersionTLS12, nil
+	case "1.3", "tls1.3":
+		return tls.VersionTLS13, nil
+	case "ssl", "ssl3", "ssl3.0", "sslv3":
+		return 0, fmt.Errorf("%q: SSLv3 is not supported (Go's TLS stack implements TLS only) - "+
+			"use \"1.0\" for the oldest protocol version it supports", raw)
+	default:
+		return 0, fmt.Errorf("unknown TLS version %q (allowed: \"1.0\", \"1.1\", \"1.2\", \"1.3\")", raw)
+	}
+}
+
+// TLSConfig builds the *tls.Config for connecting to this server: the SNI
+// server name, the optional MinTLSVersion/MaxTLSVersion bounds (for legacy
+// servers such as an old Exchange 2013 stuck on TLS 1.0/1.1) and insecureTLS
+// (skip certificate verification - self-signed/test use only). The config must
+// already be validated (validateServer), so the version strings are assumed
+// parseable.
+func (s Server) TLSConfig(insecureTLS bool) (*tls.Config, error) {
+	minV, err := ParseTLSVersion(s.MinTLSVersion)
+	if err != nil {
+		return nil, fmt.Errorf("min_tls_version: %w", err)
+	}
+	maxV, err := ParseTLSVersion(s.MaxTLSVersion)
+	if err != nil {
+		return nil, fmt.Errorf("max_tls_version: %w", err)
+	}
+	return &tls.Config{
+		ServerName:         s.Host,
+		InsecureSkipVerify: insecureTLS, //nolint:gosec // controlled by the insecure_tls config
+		MinVersion:         minV,
+		MaxVersion:         maxV,
+	}, nil
 }
 
 // readOnlyType reports whether an endpoint type can only be a sync source
