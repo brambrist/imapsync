@@ -4,6 +4,7 @@ package config
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strings"
@@ -59,6 +60,12 @@ const (
 // speak TLS 1.2 - e.g. an unpatched Exchange 2013 often maxes out at TLS 1.0/1.1
 // - while the other side of the sync stays on modern TLS. SSLv3 is not
 // supported (Go's TLS stack implements TLS only, not SSL).
+//
+// CACert trusts a self-signed certificate (or a private CA) without disabling
+// verification altogether the way InsecureTLS does: the certificate's PEM file
+// is added to the system trust store, so the usual hostname/expiry checks still
+// apply - just against a wider trust set. Typical for an internal Dovecot/
+// Exchange install with a self-issued cert.
 type Server struct {
 	Type          string `yaml:"type"` // "" | "imap" | "maildir" | "ews" | "pst"
 	Host          string `yaml:"host"`
@@ -69,6 +76,7 @@ type Server struct {
 	EWSUrl        string `yaml:"ews_url"`         // full EWS URL (else https://<host>/EWS/Exchange.asmx)
 	MinTLSVersion string `yaml:"min_tls_version"` // "1.0" | "1.1" | "1.2" | "1.3"
 	MaxTLSVersion string `yaml:"max_tls_version"`
+	CACert        string `yaml:"ca_cert"` // path to a PEM file: the server's self-signed cert, or its CA
 }
 
 // FolderPair is an explicit mapping of a folder name on server A to one on
@@ -404,6 +412,11 @@ func validateServer(name string, s Server) error {
 	if minV != 0 && maxV != 0 && minV > maxV {
 		return fmt.Errorf("%s: min_tls_version (%s) is above max_tls_version (%s)", name, s.MinTLSVersion, s.MaxTLSVersion)
 	}
+	if strings.TrimSpace(s.CACert) != "" {
+		if _, err := loadCACertPool(s.CACert); err != nil {
+			return fmt.Errorf("%s: ca_cert: %w", name, err)
+		}
+	}
 	return nil
 }
 
@@ -434,10 +447,11 @@ func ParseTLSVersion(raw string) (uint16, error) {
 
 // TLSConfig builds the *tls.Config for connecting to this server: the SNI
 // server name, the optional MinTLSVersion/MaxTLSVersion bounds (for legacy
-// servers such as an old Exchange 2013 stuck on TLS 1.0/1.1) and insecureTLS
-// (skip certificate verification - self-signed/test use only). The config must
-// already be validated (validateServer), so the version strings are assumed
-// parseable.
+// servers such as an old Exchange 2013 stuck on TLS 1.0/1.1), CACert (trust a
+// self-signed certificate without disabling verification) and insecureTLS
+// (skip certificate verification entirely - test use only). The config must
+// already be validated (validateServer), so the version string and CACert file
+// are assumed parseable.
 func (s Server) TLSConfig(insecureTLS bool) (*tls.Config, error) {
 	minV, err := ParseTLSVersion(s.MinTLSVersion)
 	if err != nil {
@@ -447,12 +461,40 @@ func (s Server) TLSConfig(insecureTLS bool) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("max_tls_version: %w", err)
 	}
-	return &tls.Config{
+	cfg := &tls.Config{
 		ServerName:         s.Host,
 		InsecureSkipVerify: insecureTLS, //nolint:gosec // controlled by the insecure_tls config
 		MinVersion:         minV,
 		MaxVersion:         maxV,
-	}, nil
+	}
+	if strings.TrimSpace(s.CACert) != "" {
+		pool, err := loadCACertPool(s.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("ca_cert: %w", err)
+		}
+		cfg.RootCAs = pool
+	}
+	return cfg, nil
+}
+
+// loadCACertPool reads a PEM file (a self-signed server certificate, or a
+// private CA certificate) and adds it to a copy of the system trust store -
+// so the usual hostname/expiry checks still apply, just against a wider set of
+// trusted issuers. Falls back to a fresh, empty pool if the system store is not
+// available (e.g. some minimal containers).
+func loadCACertPool(path string) (*x509.CertPool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(raw) {
+		return nil, fmt.Errorf("%s: no PEM certificate found", path)
+	}
+	return pool, nil
 }
 
 // readOnlyType reports whether an endpoint type can only be a sync source

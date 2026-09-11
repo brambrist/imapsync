@@ -196,6 +196,18 @@ server_a:
 
 SSLv3 is not supported - Go's TLS stack implements TLS only.
 
+**`ca_cert`** (per side) trusts a self-signed certificate, or a private CA,
+without disabling verification the way `insecure_tls` does: the PEM file is
+added to the system trust store, so hostname and expiry checks still apply -
+just against a wider trust set. Typical for an internal Dovecot/Exchange
+install with a self-issued cert:
+
+```yaml
+server_a:
+  host: mail-a.corp.ru
+  ca_cert: /etc/imapsync/mail-a.pem
+```
+
 ```yaml
 server_a:
   type: maildir

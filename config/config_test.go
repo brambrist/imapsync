@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/tls"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -249,6 +250,82 @@ func TestServerTLSConfig(t *testing.T) {
 
 	if _, err := (Server{MinTLSVersion: "nonsense"}).TLSConfig(false); err == nil {
 		t.Fatal("expected an error for a bad min_tls_version")
+	}
+}
+
+// testCertPEM is a static self-signed certificate, used only to exercise PEM
+// parsing (loadCACertPool) - no live TLS handshake happens against it here;
+// see internal/mailbox and internal/endpoint for handshake-level ca_cert tests.
+const testCertPEM = `-----BEGIN CERTIFICATE-----
+MIIBYDCCAQWgAwIBAgIBATAKBggqhkjOPQQDAjAXMRUwEwYDVQQDEwx0ZXN0Lmlu
+dmFsaWQwIBcNMjAwMTAxMDAwMDAwWhgPMjA5OTAxMDEwMDAwMDBaMBcxFTATBgNV
+BAMTDHRlc3QuaW52YWxpZDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABAywIlM6
+ZL7lSacKth1r5HP09SsLThl3oYIQP7f0bnh3blf+/OacTBLWtXTeb8HjAzkRHBG5
+px+7+qtS/aLt+wCjQDA+MA4GA1UdDwEB/wQEAwIChDATBgNVHSUEDDAKBggrBgEF
+BQcDATAXBgNVHREEEDAOggx0ZXN0LmludmFsaWQwCgYIKoZIzj0EAwIDSQAwRgIh
+AOPfGQr+kYfO+YjXKi6B2+qZv3FfMhruuEQPkmNCTGsXAiEA5q5aVU9DFM6AN2VD
+TUePrluTLDDMT3FF81sLZco8y1o=
+-----END CERTIFICATE-----
+`
+
+func TestServerTLSConfigWithCACert(t *testing.T) {
+	certPath := filepath.Join(t.TempDir(), "server.pem")
+	if err := os.WriteFile(certPath, []byte(testCertPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := Server{Host: "mail.corp.ru", CACert: certPath}
+	cfg, err := s.TLSConfig(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RootCAs == nil {
+		t.Fatal("RootCAs should be set when ca_cert is given")
+	}
+
+	if _, err := (Server{CACert: filepath.Join(t.TempDir(), "missing.pem")}).TLSConfig(false); err == nil {
+		t.Fatal("expected an error for a missing ca_cert file")
+	}
+
+	badPath := filepath.Join(t.TempDir(), "bad.pem")
+	if err := os.WriteFile(badPath, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Server{CACert: badPath}).TLSConfig(false); err == nil {
+		t.Fatal("expected an error for a ca_cert file with no PEM certificate")
+	}
+}
+
+func TestCACertValidation(t *testing.T) {
+	certPath := filepath.Join(t.TempDir(), "server.pem")
+	if err := os.WriteFile(certPath, []byte(testCertPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ok := fmt.Sprintf(`
+server_a: {host: a.example, master_user: m, master_pass: p, ca_cert: %q}
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`, certPath)
+	if _, err := Load(writeTemp(t, ok)); err != nil {
+		t.Fatalf("a valid ca_cert should be accepted: %v", err)
+	}
+
+	bad := `
+server_a: {host: a.example, master_user: m, master_pass: p, ca_cert: /no/such/file.pem}
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, bad)); err == nil {
+		t.Fatal("expected an error for a missing ca_cert file")
 	}
 }
 

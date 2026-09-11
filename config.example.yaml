@@ -43,6 +43,14 @@ server_b:
 #   min_tls_version: "1.0"
 #   max_tls_version: "1.1"
 
+# ca_cert trusts a self-signed certificate (or a private CA) without disabling
+# verification altogether the way insecure_tls does: the PEM file is added to
+# the system trust store, so hostname/expiry checks still apply - just against
+# a wider trust set. Typical for an internal Dovecot/Exchange install with a
+# self-issued cert:
+# server_a:
+#   ca_cert: /etc/imapsync/mail-a.pem
+
 # direction: which way to copy missing messages. "both" (default), "a-to-b" or
 # "b-to-a". A read-only endpoint (e.g. a PST archive) forces the direction away
 # from it regardless. Typical for a one-way import.

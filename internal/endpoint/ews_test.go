@@ -6,6 +6,8 @@ import (
 	"crypto/tls"
 	"io"
 	"net/mail"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -149,6 +151,54 @@ func TestEWSHonoursMinMaxTLSVersion(t *testing.T) {
 	}
 	if _, err := ep.ListIDs(); err != nil {
 		t.Fatalf("min_tls_version/max_tls_version should let the client reach a legacy EWS server: %v", err)
+	}
+}
+
+func TestEWSRejectsSelfSignedWithoutCACert(t *testing.T) {
+	srv := ewstest.NewTLS(t, nil, &tls.Config{})
+	// insecureTLS false, no ca_cert - the self-signed cert is untrusted.
+	b, err := NewBackend(config.Server{Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw"},
+		0, 5*time.Second, false, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := b.Connect(context.Background(), "u@d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Close()
+	if _, _, err := ep.Select("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ep.ListIDs(); err == nil {
+		t.Fatal("expected a certificate verification failure against a self-signed EWS cert")
+	}
+}
+
+func TestEWSHonoursCACert(t *testing.T) {
+	srv := ewstest.NewTLS(t, nil, &tls.Config{})
+	caCert := filepath.Join(t.TempDir(), "server.pem")
+	if err := os.WriteFile(caCert, srv.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := NewBackend(config.Server{
+		Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw",
+		CACert: caCert,
+	}, 0, 5*time.Second, false, 50) // insecureTLS stays false
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := b.Connect(context.Background(), "u@d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Close()
+	if _, _, err := ep.Select("INBOX"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ep.ListIDs(); err != nil {
+		t.Fatalf("ca_cert should let the client verify a self-signed EWS cert: %v", err)
 	}
 }
 

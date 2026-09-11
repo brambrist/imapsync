@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/pem"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -20,7 +21,8 @@ import (
 
 // Server is a fake EWS with an in-memory message store.
 type Server struct {
-	URL string
+	URL     string
+	CertPEM []byte // the server's TLS certificate, PEM-encoded (NewTLS only)
 
 	mu      sync.Mutex
 	items   map[string][]byte
@@ -57,6 +59,9 @@ func NewTLS(t *testing.T, seed map[string]string, tlsCfg *tls.Config) *Server {
 	httpSrv.StartTLS()
 	t.Cleanup(httpSrv.Close)
 	s.URL = httpSrv.URL
+	if cert := httpSrv.Certificate(); cert != nil {
+		s.CertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	}
 	return s
 }
 
