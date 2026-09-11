@@ -47,7 +47,7 @@ func testPST(t *testing.T) string {
 
 func openPST(t *testing.T, path string) Endpoint {
 	t.Helper()
-	b, err := NewBackend(config.Server{Type: config.EndpointPST, Root: path}, 0, 0, false, 10)
+	b, err := NewBackend(config.Server{Type: config.EndpointPST, Root: path}, 0, 0, false, 10, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

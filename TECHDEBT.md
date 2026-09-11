@@ -3,14 +3,15 @@
 Grouped by priority. `[DONE]` - closed; everything else is open.
 
 Closed: A1 (IMAP + Maildir + EWS), A3 (PST import), P1, P2, P4, P5, M1, M2, M3,
-M4, M6 (partially), M7, M8, L4.
+M4, M6 (partially), M7, M8, L2 (partially), L4.
 
 Added beyond the list: `max_fail_streak` - stop a user's sync after N
 consecutive errors (lift with `db-resume-user`); `direction` config knob +
 `Endpoint.ReadOnly()` (a read-only endpoint can only be a sync source);
 `min_tls_version`/`max_tls_version` per server (legacy servers like Exchange
 2013 stuck on TLS 1.0/1.1); `ca_cert` per server (trust a self-signed cert
-without disabling verification).
+without disabling verification); `debug`/`-debug` (verbose IMAP/EWS protocol
+logging for auth/impersonation troubleshooting).
 
 ## Architecture and extensibility
 
@@ -257,6 +258,10 @@ log.
 ### L2. Logs - a flat `log.Printf` to stderr
 
 No levels (debug/info/warn) or structured format. We rely on journald.
+`debug: true` / `-debug` **[partially done]** adds one verbose tier (IMAP
+capabilities + wire traffic, full EWS SOAP request/response) for diagnosing
+auth/impersonation failures - see README "Debugging auth/impersonation
+failures". It is a single on/off switch, not a real level hierarchy.
 
 ### L3. No metrics / healthcheck
 

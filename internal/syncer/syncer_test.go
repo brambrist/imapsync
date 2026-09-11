@@ -83,7 +83,7 @@ func startIMAP(t *testing.T, cert tls.Certificate) config.Server {
 // appendMsg adds a message to the given server's INBOX.
 func appendMsg(t *testing.T, srv config.Server, subject, msgID string) {
 	t.Helper()
-	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true)
+	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true, false, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -99,7 +99,7 @@ func appendMsg(t *testing.T, srv config.Server, subject, msgID string) {
 // inboxMessageIDs returns the normalized Message-IDs of every message in INBOX.
 func inboxMessageIDs(t *testing.T, srv config.Server) []string {
 	t.Helper()
-	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true)
+	cl, err := mailbox.Connect(context.Background(), srv, "username", 5*time.Second, 5*time.Second, true, false, nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

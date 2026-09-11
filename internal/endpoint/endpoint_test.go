@@ -36,10 +36,10 @@ func TestWithHeaderIdempotent(t *testing.T) {
 }
 
 func TestNewBackendRejectsUnknownType(t *testing.T) {
-	if _, err := NewBackend(config.Server{Type: "pop3", Host: "x"}, 0, 0, false, 10); err == nil {
+	if _, err := NewBackend(config.Server{Type: "pop3", Host: "x"}, 0, 0, false, 10, false, nil); err == nil {
 		t.Error("expected an error for an unknown endpoint type")
 	}
-	if _, err := NewBackend(config.Server{Host: "x"}, 0, 0, false, 10); err != nil {
+	if _, err := NewBackend(config.Server{Host: "x"}, 0, 0, false, 10, false, nil); err != nil {
 		t.Errorf("an empty type should be treated as imap: %v", err)
 	}
 }

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net/mail"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,7 +22,7 @@ import (
 func ewsBackendFor(t *testing.T, url string) Backend {
 	t.Helper()
 	b, err := NewBackend(config.Server{Type: config.EndpointEWS, EWSUrl: url, MasterUser: "svc", MasterPass: "pw"},
-		0, 5*time.Second, false, 50)
+		0, 5*time.Second, false, 50, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +115,7 @@ func TestEWSAppendRoundTrip(t *testing.T) {
 func TestEWSRejectsLegacyTLSWithoutTheKnob(t *testing.T) {
 	srv := ewstest.NewTLS(t, nil, &tls.Config{MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11})
 	b, err := NewBackend(config.Server{Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw"},
-		0, 5*time.Second, true, 50)
+		0, 5*time.Second, true, 50, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +139,7 @@ func TestEWSHonoursMinMaxTLSVersion(t *testing.T) {
 	b, err := NewBackend(config.Server{
 		Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw",
 		MinTLSVersion: "1.0", MaxTLSVersion: "1.1",
-	}, 0, 5*time.Second, true, 50)
+	}, 0, 5*time.Second, true, 50, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +160,7 @@ func TestEWSRejectsSelfSignedWithoutCACert(t *testing.T) {
 	srv := ewstest.NewTLS(t, nil, &tls.Config{})
 	// insecureTLS false, no ca_cert - the self-signed cert is untrusted.
 	b, err := NewBackend(config.Server{Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw"},
-		0, 5*time.Second, false, 50)
+		0, 5*time.Second, false, 50, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +187,7 @@ func TestEWSHonoursCACert(t *testing.T) {
 	b, err := NewBackend(config.Server{
 		Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw",
 		CACert: caCert,
-	}, 0, 5*time.Second, false, 50) // insecureTLS stays false
+	}, 0, 5*time.Second, false, 50, false, nil) // insecureTLS stays false
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +201,57 @@ func TestEWSHonoursCACert(t *testing.T) {
 	}
 	if _, err := ep.ListIDs(); err != nil {
 		t.Fatalf("ca_cert should let the client verify a self-signed EWS cert: %v", err)
+	}
+}
+
+func TestEWSDebugLogsRequestAndResponse(t *testing.T) {
+	srv := ewstest.New(t, map[string]string{"i-1": ewsMsg})
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+
+	b, err := NewBackend(config.Server{Type: config.EndpointEWS, EWSUrl: srv.URL, MasterUser: "svc", MasterPass: "pw"},
+		0, 5*time.Second, false, 50, true, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := b.Connect(context.Background(), "ivanov@corp.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Close()
+	if _, _, err := ep.Select("Sent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ep.ListIDs(); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawRequest, sawResponse bool
+	for _, l := range lines {
+		if strings.Contains(l, "request as svc, impersonating ivanov@corp.ru") && strings.Contains(l, "FindItem") {
+			sawRequest = true
+		}
+		if strings.Contains(l, "response HTTP 200") && strings.Contains(l, "ResponseClass") {
+			sawResponse = true
+		}
+		// never log the Basic auth credential itself.
+		if strings.Contains(l, "pw") && !strings.Contains(l, "request as svc") {
+			t.Errorf("debug log line looks like it leaked the password: %q", l)
+		}
+	}
+	if !sawRequest {
+		t.Errorf("expected a logged SOAP request naming the caller and impersonation target, got:\n%s", strings.Join(lines, "\n"))
+	}
+	if !sawResponse {
+		t.Errorf("expected a logged SOAP response, got:\n%s", strings.Join(lines, "\n"))
 	}
 }
 

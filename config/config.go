@@ -131,6 +131,17 @@ type Config struct {
 	FetchBatchSize int      `yaml:"fetch_batch_size"` // FETCH batch size
 	InsecureTLS    bool     `yaml:"insecure_tls"`     // do not verify the certificate (for tests)
 
+	// Debug turns on verbose IMAP/EWS protocol logging - connection details,
+	// IMAP server capabilities, and the full EWS SOAP request/response - to
+	// diagnose auth/impersonation failures. Also settable with `-debug` on the
+	// run subcommand, without touching the config file.
+	//
+	// WARNING: for IMAP this logs the raw wire traffic, including the
+	// AUTHENTICATE PLAIN payload (the master account's credentials, base64
+	// encoded but trivially decodable) - treat debug output as a secret, the
+	// same way you would Dovecot's auth_debug_passwords.
+	Debug bool `yaml:"debug"`
+
 	// ConnectRetries - how many times to retry connecting/reconnecting to a
 	// server on a transient error (0 - no retries). RetryBackoff is the base
 	// pause between attempts (grows exponentially).

@@ -126,6 +126,32 @@ User=imapsync
 WantedBy=multi-user.target
 ```
 
+### Debugging auth/impersonation failures
+
+```sh
+imapsync run -config config.yaml -debug
+```
+
+(or set `debug: true` in the config). This turns on verbose protocol logging
+for both transports - the exact thing to reach for when access looks right
+(role assigned, password correct) but you still get an unauthorized error:
+
+- **IMAP** - the server's advertised `CAPABILITY` list, plus the raw wire
+  traffic of the connection (via go-imap's `SetDebug`).
+- **EWS** - the full SOAP request (as which Basic-auth user, impersonating
+  which mailbox) and the full SOAP response, including the exact
+  `ResponseCode`/`MessageText` Exchange returns - e.g. `ErrorImpersonateUserDenied`
+  (the `ApplicationImpersonation` role isn't applied/scoped to that mailbox) vs.
+  `ErrorAccessDenied` vs. a plain HTTP 401 (Basic auth itself rejected). Those
+  three look identical as a generic "unauthorized" - the debug log tells them
+  apart.
+
+**WARNING (IMAP only):** the wire log includes the raw `AUTHENTICATE PLAIN`
+payload - the master account's credentials, base64-encoded but trivially
+decodable. Treat debug output as a secret, the same way you would Dovecot's
+`auth_debug_passwords`. The EWS debug log never includes the `Authorization`
+header, so it's safe to share as-is.
+
 ## Configuration
 
 See `config.example.yaml`. Minimum:

@@ -40,7 +40,7 @@ func seedMaildir(t *testing.T, root, subject, msgID string) {
 
 func maildirMsgIDs(t *testing.T, root string) []string {
 	t.Helper()
-	b, err := endpoint.NewBackend(config.Server{Type: config.EndpointMaildir, Root: root}, 0, 0, false, 10)
+	b, err := endpoint.NewBackend(config.Server{Type: config.EndpointMaildir, Root: root}, 0, 0, false, 10, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

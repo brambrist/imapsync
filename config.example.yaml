@@ -88,6 +88,15 @@ fetch_batch_size: 200
 insecure_tls: false
 hash_header: "X-Imapsync-Hash"
 
+# debug: verbose IMAP/EWS protocol logging - IMAP server capabilities and the
+# raw AUTHENTICATE exchange, or the full EWS SOAP request/response - to
+# diagnose auth/impersonation failures ("I have rights but still get an
+# unauthorized error"). Also settable with `imapsync run -debug`.
+# WARNING: the IMAP wire log includes the AUTHENTICATE PLAIN payload (the
+# master account's credentials, base64-encoded) - treat debug output as a
+# secret, the same way you would Dovecot's auth_debug_passwords.
+debug: false
+
 # Connection retries on a drop / transient error.
 # connect_retries: 0 means "default" (3); a negative value disables retries.
 connect_retries: 3

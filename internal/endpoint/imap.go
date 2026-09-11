@@ -17,16 +17,18 @@ type imapBackend struct {
 	ioTimeout   time.Duration
 	insecureTLS bool
 	fetchBatch  int
+	debug       bool
+	logf        func(string, ...any)
 }
 
-func newIMAPBackend(srv config.Server, dial, io time.Duration, insecureTLS bool, fetchBatch int) *imapBackend {
-	return &imapBackend{srv: srv, dialTimeout: dial, ioTimeout: io, insecureTLS: insecureTLS, fetchBatch: fetchBatch}
+func newIMAPBackend(srv config.Server, dial, io time.Duration, insecureTLS bool, fetchBatch int, debug bool, logf func(string, ...any)) *imapBackend {
+	return &imapBackend{srv: srv, dialTimeout: dial, ioTimeout: io, insecureTLS: insecureTLS, fetchBatch: fetchBatch, debug: debug, logf: logf}
 }
 
 func (b *imapBackend) Addr() string { return b.srv.Addr() }
 
 func (b *imapBackend) Connect(ctx context.Context, user string) (Endpoint, error) {
-	cl, err := mailbox.Connect(ctx, b.srv, user, b.dialTimeout, b.ioTimeout, b.insecureTLS)
+	cl, err := mailbox.Connect(ctx, b.srv, user, b.dialTimeout, b.ioTimeout, b.insecureTLS, b.debug, b.logf)
 	if err != nil {
 		return nil, err
 	}

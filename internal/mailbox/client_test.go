@@ -14,6 +14,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,7 +82,7 @@ func TestConnectRejectsLegacyTLSWithoutTheKnob(t *testing.T) {
 	// without min_tls_version the client's default floor (TLS 1.2) can't reach
 	// it at all.
 	srv, _ := startLegacyIMAP(t, tls.VersionTLS10, tls.VersionTLS11)
-	_, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, false)
+	_, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, false, false, nil)
 	if err == nil {
 		t.Fatal("expected a TLS handshake failure against a TLS-1.0/1.1-only server")
 	}
@@ -91,7 +93,7 @@ func TestConnectHonoursMinMaxTLSVersion(t *testing.T) {
 	srv.MinTLSVersion = "1.0"
 	srv.MaxTLSVersion = "1.1"
 
-	cl, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, true)
+	cl, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, true, false, nil)
 	if err != nil {
 		t.Fatalf("min_tls_version/max_tls_version should let the client reach a legacy server: %v", err)
 	}
@@ -102,7 +104,7 @@ func TestConnectRejectsSelfSignedWithoutCACert(t *testing.T) {
 	srv, _ := startLegacyIMAP(t, 0, 0)
 	// insecureTLS is false and ca_cert is unset - a self-signed cert is not in
 	// the system trust store.
-	_, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, false)
+	_, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, false, false, nil)
 	if err == nil {
 		t.Fatal("expected a certificate verification failure against a self-signed cert")
 	}
@@ -117,9 +119,52 @@ func TestConnectHonoursCACert(t *testing.T) {
 
 	// insecureTLS stays false: ca_cert should be enough to verify the
 	// self-signed certificate properly (hostname/expiry checks still apply).
-	cl, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, false)
+	cl, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, false, false, nil)
 	if err != nil {
 		t.Fatalf("ca_cert should let the client verify a self-signed cert: %v", err)
 	}
 	cl.Logout()
+}
+
+func TestConnectDebugLogsCapabilitiesAndWire(t *testing.T) {
+	srv, _ := startLegacyIMAP(t, 0, 0)
+
+	var mu sync.Mutex
+	var lines []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, fmt.Sprintf(format, args...))
+	}
+
+	cl, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, true, true, logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.Logout()
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawWarning, sawCapabilities, sawWire bool
+	for _, l := range lines {
+		if strings.Contains(l, "WARNING") && strings.Contains(l, "secret") {
+			sawWarning = true
+		}
+		if strings.Contains(l, "server capabilities") {
+			sawCapabilities = true
+		}
+		// the raw wire dump includes the server's greeting/tagged responses.
+		if strings.Contains(l, "OK") {
+			sawWire = true
+		}
+	}
+	if !sawWarning {
+		t.Error("expected a warning that the debug log carries credentials")
+	}
+	if !sawCapabilities {
+		t.Errorf("expected a server-capabilities line, got:\n%s", strings.Join(lines, "\n"))
+	}
+	if !sawWire {
+		t.Errorf("expected raw wire traffic (server OK responses) in the debug log, got:\n%s", strings.Join(lines, "\n"))
+	}
 }

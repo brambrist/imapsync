@@ -21,7 +21,7 @@ func newMaildir(t *testing.T) (Backend, string) {
 			t.Fatal(err)
 		}
 	}
-	b, err := NewBackend(config.Server{Type: config.EndpointMaildir, Root: root}, 0, 0, false, 10)
+	b, err := NewBackend(config.Server{Type: config.EndpointMaildir, Root: root}, 0, 0, false, 10, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

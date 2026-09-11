@@ -12,6 +12,8 @@ import (
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config.yaml", "path to the YAML config")
+	debug := fs.Bool("debug", false, "verbose IMAP/EWS protocol logging (same as config: debug: true). "+
+		"WARNING: IMAP debug logs the AUTHENTICATE exchange, which carries credentials - treat the log as a secret")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -19,6 +21,9 @@ func cmdRun(args []string) error {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
+	}
+	if *debug {
+		cfg.Debug = true
 	}
 
 	if cfg.Source == config.SourceSQLite {

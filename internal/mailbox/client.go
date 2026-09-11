@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,32 @@ import (
 
 	"imapsync/config"
 )
+
+// debugLogWriter adapts an io.Writer (as expected by client.Client.SetDebug)
+// to a logf sink: it buffers partial writes and emits one logf call per
+// complete line, prefixed. See Connect's debug parameter for what ends up in
+// this log (including credentials for IMAP).
+type debugLogWriter struct {
+	logf   func(string, ...any)
+	prefix string
+	buf    []byte
+}
+
+func (w *debugLogWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := bytes.TrimRight(w.buf[:i], "\r")
+		if len(line) > 0 {
+			w.logf("%s%s", w.prefix, line)
+		}
+		w.buf = w.buf[i+1:]
+	}
+	return len(p), nil
+}
 
 // Client is a thin wrapper over the imap client bound to a specific
 // (server, target user) for context in errors and logs.
@@ -40,7 +67,16 @@ type Client struct {
 // ioTimeout is the deadline for one IMAP operation. In addition, when ctx is
 // cancelled the TCP connection is force-closed (Terminate), which interrupts a
 // hung call - go-imap v1 does not react to context on its own.
-func Connect(ctx context.Context, srv config.Server, targetUser string, dialTimeout, ioTimeout time.Duration, insecureTLS bool) (*Client, error) {
+//
+// If debug is set, logf receives the server's advertised capabilities and the
+// raw IMAP wire traffic (go-imap's Client.SetDebug). WARNING: the wire log
+// includes the AUTHENTICATE PLAIN payload - the master account's credentials,
+// base64 encoded but trivially decodable - so treat it as a secret, the same
+// way you would Dovecot's auth_debug_passwords.
+func Connect(ctx context.Context, srv config.Server, targetUser string, dialTimeout, ioTimeout time.Duration, insecureTLS, debug bool, logf func(string, ...any)) (*Client, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	addr := srv.Addr()
 
 	dialer := &net.Dialer{Timeout: dialTimeout}
@@ -56,6 +92,22 @@ func Connect(ctx context.Context, srv config.Server, targetUser string, dialTime
 
 	// Deadline for every subsequent I/O operation.
 	imapCli.Timeout = ioTimeout
+
+	if debug {
+		logf("imap %s (user %s): WARNING - wire debug logging is on, the log below "+
+			"includes the AUTHENTICATE payload (credentials, base64-encoded) - treat it as a secret", addr, targetUser)
+		imapCli.SetDebug(&debugLogWriter{logf: logf, prefix: fmt.Sprintf("imap %s (user %s): ", addr, targetUser)})
+		if caps, capErr := imapCli.Capability(); capErr == nil {
+			names := make([]string, 0, len(caps))
+			for c := range caps {
+				names = append(names, c)
+			}
+			sort.Strings(names)
+			logf("imap %s: server capabilities: %s", addr, strings.Join(names, " "))
+		} else {
+			logf("imap %s: CAPABILITY failed: %v", addr, capErr)
+		}
+	}
 
 	// SASL PLAIN with authzid: identity(authzid)=target user, username(authcid)=master.
 	auth := sasl.NewPlainClient(targetUser, srv.MasterUser, srv.MasterPass)

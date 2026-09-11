@@ -73,6 +73,9 @@ func TestLoadValidWithDefaults(t *testing.T) {
 	if cfg.FullResyncEvery.Std() != 24*time.Hour {
 		t.Errorf("full_resync_every default: got %v", cfg.FullResyncEvery.Std())
 	}
+	if cfg.Debug {
+		t.Error("debug should default to false")
+	}
 }
 
 func TestWorkersMustBeLessThanUsers(t *testing.T) {
@@ -374,6 +377,16 @@ workers: 1
 `
 	if _, err := Load(writeTemp(t, inverted)); err == nil {
 		t.Fatal("expected an error: min_tls_version above max_tls_version")
+	}
+}
+
+func TestDebugFlag(t *testing.T) {
+	cfg, err := Load(writeTemp(t, validCfg+"\ndebug: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Debug {
+		t.Error("debug: true should be honoured")
 	}
 }
 

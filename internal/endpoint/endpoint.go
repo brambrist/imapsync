@@ -65,15 +65,20 @@ type Backend interface {
 	Addr() string
 }
 
-// NewBackend builds a backend from the server config.
-func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecureTLS bool, fetchBatch int) (Backend, error) {
+// NewBackend builds a backend from the server config. debug/logf enable
+// verbose IMAP/EWS protocol logging (see config.Config.Debug) - ignored by
+// maildir/pst, which have no network protocol to log.
+func NewBackend(srv config.Server, dialTimeout, ioTimeout time.Duration, insecureTLS bool, fetchBatch int, debug bool, logf func(string, ...any)) (Backend, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	switch srv.Type {
 	case "", config.EndpointIMAP:
-		return newIMAPBackend(srv, dialTimeout, ioTimeout, insecureTLS, fetchBatch), nil
+		return newIMAPBackend(srv, dialTimeout, ioTimeout, insecureTLS, fetchBatch, debug, logf), nil
 	case config.EndpointMaildir:
 		return newMaildirBackend(srv), nil
 	case config.EndpointEWS:
-		return newEWSBackend(srv, ioTimeout, insecureTLS, fetchBatch), nil
+		return newEWSBackend(srv, ioTimeout, insecureTLS, fetchBatch, debug, logf), nil
 	case config.EndpointPST:
 		return newPSTBackend(srv), nil
 	default:

@@ -25,9 +25,11 @@ type ewsBackend struct {
 	insecureTLS bool
 	timeout     time.Duration
 	batch       int
+	debug       bool
+	logf        func(string, ...any)
 }
 
-func newEWSBackend(srv config.Server, ioTimeout time.Duration, insecureTLS bool, batch int) *ewsBackend {
+func newEWSBackend(srv config.Server, ioTimeout time.Duration, insecureTLS bool, batch int, debug bool, logf func(string, ...any)) *ewsBackend {
 	url := strings.TrimSpace(srv.EWSUrl)
 	if url == "" {
 		url = "https://" + srv.Host + "/EWS/Exchange.asmx"
@@ -35,7 +37,7 @@ func newEWSBackend(srv config.Server, ioTimeout time.Duration, insecureTLS bool,
 	if batch < 1 {
 		batch = 50
 	}
-	return &ewsBackend{url: url, srv: srv, user: srv.MasterUser, pass: srv.MasterPass, insecureTLS: insecureTLS, timeout: ioTimeout, batch: batch}
+	return &ewsBackend{url: url, srv: srv, user: srv.MasterUser, pass: srv.MasterPass, insecureTLS: insecureTLS, timeout: ioTimeout, batch: batch, debug: debug, logf: logf}
 }
 
 func (b *ewsBackend) Addr() string { return b.url }
@@ -52,6 +54,8 @@ func (b *ewsBackend) Connect(_ context.Context, user string) (Endpoint, error) {
 		user:        b.user,
 		pass:        b.pass,
 		impersonate: user,
+		debug:       b.debug,
+		logf:        b.logf,
 	}
 	return &ewsEndpoint{cl: cl, batch: b.batch}, nil
 }
@@ -64,6 +68,8 @@ type ewsClient struct {
 	user        string
 	pass        string
 	impersonate string
+	debug       bool
+	logf        func(string, ...any)
 }
 
 const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
@@ -73,12 +79,20 @@ const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 </soap:Envelope>`
 
 // call wraps body in a SOAP envelope (with ExchangeImpersonation) and POSTs it.
+// If c.debug is set, the full request (as Basic user c.user, impersonating
+// c.impersonate) and response are logged via c.logf. The Authorization header
+// itself (Basic base64(user:pass)) is never logged - only the SOAP body, which
+// carries no credentials, so this is safe to share unlike IMAP wire debug.
 func (c *ewsClient) call(ctx context.Context, body string) ([]byte, error) {
 	imp := ""
 	if c.impersonate != "" {
 		imp = fmt.Sprintf(`<t:ExchangeImpersonation><t:ConnectingSID><t:PrimarySmtpAddress>%s</t:PrimarySmtpAddress></t:ConnectingSID></t:ExchangeImpersonation>`, xesc(c.impersonate))
 	}
 	env := fmt.Sprintf(soapEnvelope, imp, body)
+
+	if c.debug {
+		c.logf("ews %s: request as %s, impersonating %s:\n%s", c.url, c.user, c.impersonate, env)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, strings.NewReader(env))
 	if err != nil {
@@ -89,10 +103,16 @@ func (c *ewsClient) call(ctx context.Context, body string) ([]byte, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if c.debug {
+			c.logf("ews %s: request failed: %v", c.url, err)
+		}
 		return nil, fmt.Errorf("EWS %s: %w", c.url, err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if c.debug {
+		c.logf("ews %s: response HTTP %d:\n%s", c.url, resp.StatusCode, data)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("EWS %s: HTTP %d: %s", c.url, resp.StatusCode, snippet(data))
 	}

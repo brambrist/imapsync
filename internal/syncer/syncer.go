@@ -47,7 +47,7 @@ func NewWithState(cfg *config.Config, coll *stats.Collector, logf stats.Logf, st
 		logf = func(string, ...any) {}
 	}
 	mk := func(srv config.Server) endpoint.Backend {
-		b, err := endpoint.NewBackend(srv, cfg.DialTimeout.Std(), cfg.IOTimeout.Std(), cfg.InsecureTLS, cfg.FetchBatchSize)
+		b, err := endpoint.NewBackend(srv, cfg.DialTimeout.Std(), cfg.IOTimeout.Std(), cfg.InsecureTLS, cfg.FetchBatchSize, cfg.Debug, logf)
 		if err != nil {
 			panic(err)
 		}
