@@ -14,11 +14,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/backend/memory"
 	"github.com/emersion/go-imap/server"
 
@@ -166,5 +168,66 @@ func TestConnectDebugLogsCapabilitiesAndWire(t *testing.T) {
 	}
 	if !sawWire {
 		t.Errorf("expected raw wire traffic (server OK responses) in the debug log, got:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestListFoldersAndCreateMailboxTranslateDelimiter proves the "/" <->
+// server-native-delimiter translation happens in both directions, checking
+// the raw (untranslated) LIST output directly - not just round-tripping
+// through our own functions, where a matching bug in both directions could
+// hide itself.
+func TestListFoldersAndCreateMailboxTranslateDelimiter(t *testing.T) {
+	orig := memory.Delimiter
+	memory.Delimiter = "."
+	t.Cleanup(func() { memory.Delimiter = orig })
+
+	srv, _ := startLegacyIMAP(t, 0, 0)
+	cl, err := Connect(context.Background(), srv, "username", 2*time.Second, 2*time.Second, true, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Logout()
+
+	if err := cl.CreateMailbox("Archive/2024"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Raw server-side name: must use the server's native "." delimiter.
+	ch := make(chan *imap.MailboxInfo, 16)
+	done := make(chan error, 1)
+	go func() { done <- cl.c.List("", "*", ch) }()
+	var rawNames []string
+	for m := range ch {
+		rawNames = append(rawNames, m.Name)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rawNames, "Archive.2024") {
+		t.Errorf("native LIST should contain %q, got %v", "Archive.2024", rawNames)
+	}
+
+	// Our canonical view must report "/" regardless of the server's delimiter.
+	folders, err := cl.ListFolders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var canonNames []string
+	for _, f := range folders {
+		canonNames = append(canonNames, f.Name)
+	}
+	if !slices.Contains(canonNames, "Archive/2024") {
+		t.Errorf("canonical ListFolders should contain %q, got %v", "Archive/2024", canonNames)
+	}
+
+	// ResolveFolder (used by Select) must also accept the canonical name -
+	// this is what lets a folder pair discovered via ListFolders round-trip
+	// through Select on a server whose native delimiter isn't "/".
+	real, err := cl.ResolveFolder("Archive/2024")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real != "Archive.2024" {
+		t.Errorf("ResolveFolder(%q) = %q, want the native name %q", "Archive/2024", real, "Archive.2024")
 	}
 }

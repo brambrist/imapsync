@@ -84,6 +84,15 @@ folders:
   - a: "Sent"
     b: "Sent Items"
 
+# Full-mailbox sync instead of an explicit folders list: every folder is
+# discovered on both sides and paired automatically (by SPECIAL-USE attribute
+# first - so "Sent" pairs with "Sent Items" - then by case-insensitive name).
+# A folder that exists on only one side is created on the other, honouring
+# direction and a read-only endpoint (same rule as message copying). Requires
+# both sides to support folder discovery: imap, maildir, pst - NOT ews.
+# sync_all_folders: true
+# folder_exclude: ["Trash", "Junk", "\\Junk", "\\Trash"]   # by name or SPECIAL-USE token
+
 users:
   - name: ivanov
     user_a: ivanov@corp.ru

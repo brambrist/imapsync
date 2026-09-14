@@ -189,6 +189,17 @@ func (cl *Client) ResolveFolder(name string) (string, error) {
 			return m.Name, nil
 		}
 	}
+	// name may be a canonical "/"-delimited path (as returned by ListFolders /
+	// used by CreateMailbox) on a server whose own delimiter is not "/" -
+	// translate before falling back to a case-insensitive match.
+	if delim := folderDelimiter(infos); delim != "" && delim != "/" && strings.Contains(name, "/") {
+		native := strings.ReplaceAll(name, "/", delim)
+		for _, m := range infos {
+			if m.Name == native || strings.EqualFold(m.Name, native) {
+				return m.Name, nil
+			}
+		}
+	}
 	for _, m := range infos {
 		if strings.EqualFold(m.Name, name) {
 			return m.Name, nil
@@ -201,6 +212,80 @@ func (cl *Client) ResolveFolder(name string) (string, error) {
 	}
 	return "", fmt.Errorf("folder %q not found on %s (user %s); available: %s",
 		name, cl.server, cl.user, strings.Join(avail, ", "))
+}
+
+// FolderInfo is a server folder, canonicalized: Name uses "/" as the
+// hierarchy delimiter regardless of what the server itself uses (translated
+// from MailboxInfo.Delimiter), so callers never need to know the server's
+// native separator.
+type FolderInfo struct {
+	Name       string
+	SpecialUse string // RFC 6154 attribute ("\Sent" etc.), "" if none
+	Selectable bool   // false for \Noselect
+}
+
+// folderDelimiter returns the server's LIST delimiter (from the first entry
+// that reports one), defaulting to "/" (already canonical - no translation
+// needed) if the server does not report one at all.
+func folderDelimiter(infos []*imap.MailboxInfo) string {
+	for _, m := range infos {
+		if m.Delimiter != "" {
+			return m.Delimiter
+		}
+	}
+	return "/"
+}
+
+// ListFolders returns every folder on the server (LIST "" "*", cached),
+// canonicalized to a "/"-delimited name.
+func (cl *Client) ListFolders() ([]FolderInfo, error) {
+	infos, err := cl.listFolders()
+	if err != nil {
+		return nil, err
+	}
+	delim := folderDelimiter(infos)
+
+	out := make([]FolderInfo, 0, len(infos))
+	for _, m := range infos {
+		name := m.Name
+		if delim != "" && delim != "/" {
+			name = strings.ReplaceAll(name, delim, "/")
+		}
+		if strings.EqualFold(name, "INBOX") {
+			name = "INBOX"
+		}
+		fi := FolderInfo{Name: name, Selectable: true}
+		for _, a := range m.Attributes {
+			if strings.EqualFold(a, `\Noselect`) {
+				fi.Selectable = false
+			}
+			if specialUseAttrs[a] {
+				fi.SpecialUse = a
+			}
+		}
+		out = append(out, fi)
+	}
+	return out, nil
+}
+
+// CreateMailbox issues IMAP CREATE for a canonical ("/"-delimited) folder
+// name, translated to the server's own delimiter first, and invalidates the
+// folder cache so the new folder shows up in the next ListFolders/ResolveFolder.
+func (cl *Client) CreateMailbox(name string) error {
+	infos, err := cl.listFolders()
+	if err != nil {
+		return err
+	}
+	delim := folderDelimiter(infos)
+	native := name
+	if delim != "" && delim != "/" {
+		native = strings.ReplaceAll(name, "/", delim)
+	}
+	if err := cl.c.Create(native); err != nil {
+		return fmt.Errorf("CREATE %q on %s (user %s): %w", native, cl.server, cl.user, err)
+	}
+	cl.folders = nil
+	return nil
 }
 
 // Select opens a folder for read-write and returns its status.

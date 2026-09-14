@@ -144,8 +144,18 @@ type Config struct {
 	SQLitePath string `yaml:"sqlite_path"`
 
 	// Folders/Users are populated either from YAML or from sqlite (see Source).
+	// Ignored (may be empty) when SyncAllFolders is set.
 	Folders []FolderPair `yaml:"folders"`
 	Users   []User       `yaml:"users"`
+
+	// SyncAllFolders replaces the explicit Folders list: each cycle, the
+	// syncer discovers every folder on both sides and pairs them (by
+	// SPECIAL-USE attribute first, then by name), creating a missing folder on
+	// the writable side when direction allows it. Requires both endpoints to
+	// support folder discovery - imap, maildir, pst; NOT ews. FolderExclude
+	// skips folders by name or SPECIAL-USE token (case-insensitive).
+	SyncAllFolders bool     `yaml:"sync_all_folders"`
+	FolderExclude  []string `yaml:"folder_exclude"`
 
 	Workers        int      `yaml:"workers"`          // worker count, must be < number of users
 	SyncInterval   Duration `yaml:"sync_interval"`    // pause between full cycles
@@ -357,6 +367,17 @@ func (c *Config) validateBase() error {
 		return fmt.Errorf("server_b is read-only (type %q) but direction is %q", c.ServerB.Type, DirectionAToB)
 	}
 
+	if c.SyncAllFolders {
+		if !folderDiscoverable(c.ServerA.Type) {
+			return fmt.Errorf("sync_all_folders: server_a type %q does not support folder discovery (only %q, %q, %q)",
+				c.ServerA.Type, EndpointIMAP, EndpointMaildir, EndpointPST)
+		}
+		if !folderDiscoverable(c.ServerB.Type) {
+			return fmt.Errorf("sync_all_folders: server_b type %q does not support folder discovery (only %q, %q, %q)",
+				c.ServerB.Type, EndpointIMAP, EndpointMaildir, EndpointPST)
+		}
+	}
+
 	if c.Workers < 1 {
 		return fmt.Errorf("workers must be >= 1, got %d", c.Workers)
 	}
@@ -370,8 +391,8 @@ func (c *Config) validateBase() error {
 // the worker count. Called from Load with source: yaml and manually after
 // loading from sqlite.
 func (c *Config) ValidateEntities() error {
-	if len(c.Folders) == 0 {
-		return fmt.Errorf("no folder pairs configured (folders)")
+	if len(c.Folders) == 0 && !c.SyncAllFolders {
+		return fmt.Errorf("no folder pairs configured (folders, or sync_all_folders: true)")
 	}
 	for i, f := range c.Folders {
 		if strings.TrimSpace(f.A) == "" || strings.TrimSpace(f.B) == "" {
@@ -546,6 +567,12 @@ func readOnlyType(t string) bool { return t == EndpointPST }
 // pathOverridable reports whether a per-user path_a/path_b override applies to
 // this endpoint type - only the ones whose Root is a %u/%n/%d path template.
 func pathOverridable(t string) bool { return t == EndpointMaildir || t == EndpointPST }
+
+// folderDiscoverable reports whether an endpoint type implements folder
+// discovery (endpoint.FolderLister) - imap, maildir, pst. Not ews.
+func folderDiscoverable(t string) bool {
+	return t == "" || t == EndpointIMAP || t == EndpointMaildir || t == EndpointPST
+}
 
 // Addr returns a human-readable endpoint address for logs.
 func (s Server) Addr() string {

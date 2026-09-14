@@ -2,8 +2,9 @@
 
 Grouped by priority. `[DONE]` - closed; everything else is open.
 
-Closed: A1 (IMAP + Maildir + EWS), A3 (PST import), P1, P2, P4, P5, M1, M2, M3,
-M4, M6 (partially), M7, M8, L2 (partially), L4.
+Closed: A1 (IMAP + Maildir + EWS), A3 (PST import), A4 (imap/maildir/pst,
+partially - not ews), P1, P2, P4, P5, M1, M2, M3, M4, M6 (partially), M7, M8,
+L2 (partially), L4.
 
 Added beyond the list: `max_fail_streak` - stop a user's sync after N
 consecutive errors (lift with `db-resume-user`); `direction` config knob +
@@ -125,51 +126,59 @@ Duplicate the `db-*` commands over HTTP. Assessment: reasonable, but not now.
 - **Effort estimate:** ~1 day (hot-reload + unix socket + tests); TCP+auth on
   top.
 
-### A4. Full-mailbox sync with folder hierarchy
+### A4. [DONE for imap/maildir/pst] Full-mailbox sync with folder hierarchy
 
-Today the syncer only walks an explicit `folders: [{a, b}]` list. "Sync the
-whole mailbox" means adding folder discovery + pairing + creation on top of the
-existing per-folder engine; the dedup/copy core does not change.
+`sync_all_folders: true` replaces the explicit `folders: [{a, b}]` list: every
+cycle, `internal/syncer/discover.go` lists both sides' folders
+(`endpoint.FolderLister`), pairs them (SPECIAL-USE attribute first, then
+case-insensitive name), creates a one-sided folder on the writable side
+(`endpoint.FolderCreator`, honouring `direction`/`ReadOnly()` - same rule as
+message copying), and hands the resulting pairs to the existing `syncPair`
+unchanged. `folder_exclude` skips folders by name or SPECIAL-USE token.
+Rejected at config-validation time for `ews` on either side (it implements
+neither interface - deliberately out of scope, see below).
 
-Already in place to build on: `mailbox.Client.listFolders` (`LIST "" "*"`,
-cached, with delimiter + SPECIAL-USE attributes), `ResolveFolder` (exact ->
-SPECIAL-USE -> case-insensitive), the Maildir endpoint creating subfolders on
-`Select`, the PST endpoint walking a full tree.
+Folder identity is canonicalized to a `/`-delimited name across all three
+endpoints, regardless of native delimiter - Maildir++'s `.` (`maildir.go`
+`ListFolders`/`CreateFolder`, and `Select`'s returned name, now consistently
+translate dots <-> `/`), an IMAP server's own LIST delimiter
+(`mailbox.Client.ListFolders`/`CreateMailbox` translate to/from it;
+`ResolveFolder` now also tries a canonical-name lookup so a paired/created
+folder round-trips through `Select` on a server whose delimiter isn't `/` -
+this was a real bug surfaced by testing, not just a hypothetical). PST folder
+identity stays flat (by name only, matching `Select`'s pre-existing
+limitation); `ListFolders` skips administrative/search pseudo-folders
+(`ROOT_FOLDER`, "Top of Personal Folders", "Search Root",
+`IdentifierTypeSearchFolder`). PST's `CreateFolder` errors (read-only, same
+pattern as `Append`) but the interface is still implemented, matching how
+`ReadOnly()` - not a type assertion - is the actual gate the syncer uses.
 
-Plan:
+Tests: `internal/mailbox/client_test.go` (delimiter translation verified
+against the *raw*, untranslated LIST output - not just round-tripped through
+our own functions), `internal/endpoint/{maildir,pst}_test.go`, pure unit tests
+for the matching/filtering algorithm plus three end-to-end integration tests
+in `internal/syncer` (maildir<->maildir, imap<->maildir, pst<->maildir) proving
+discovery + pairing + folder creation + sync + idempotency together, not just
+that each piece parses.
 
-- **`Endpoint.ListFolders() ([]FolderInfo, error)`** - `{Name, Delimiter,
-  SpecialUse, Selectable}`. IMAP: from the LIST cache. Maildir: walk `.sub`
-  dirs. EWS: `FindFolder` deep traversal filtered to `IPF.Note` (skip
-  Calendar/Contacts/Tasks/search folders). PST: `WalkFolders` (done).
-- **`Endpoint.CreateFolder(name string) error`** - IMAP `CREATE`, Maildir
-  `MkdirAll`, EWS `CreateFolder`; PST returns an error (read-only, same pattern
-  as `Append`).
-- **A pairing pass** (pool or syncer): per user list both sides, match folders,
-  create the missing ones on the writable side(s) honouring `direction`, then
-  run the existing `syncPair` per matched pair.
-- **Config:** `folders: "*"` (or `sync_all_folders: true`) with
-  `folder_exclude: ["Trash", "Junk", "\\Junk"]` and optional `folder_include`
-  globs. Explicit pairs stay as an override.
+**Not done - EWS.** Deliberately out of scope for this pass (explicit request:
+"not for ews"). `endpoint/ews.go` implements neither `FolderLister` nor
+`FolderCreator`; `sync_all_folders` with `ews` on either side is rejected at
+config-load time with a clear error rather than failing at runtime. To add it
+later: `FindFolder` deep traversal filtered to `IPF.Note` (skip
+Calendar/Contacts/Tasks/search folders) for `ListFolders`, `CreateFolder` SOAP
+call for `CreateFolder` - the same two interfaces, no syncer-side changes
+needed.
 
-The hard part (needs testing against a real Dovecot + Exchange pair):
-
-- **Delimiter translation.** Dovecot `/` or `.`, Exchange `/`, Maildir++ `.`,
-  some servers nest under `INBOX.`. `INBOX/Projects/Q1` on A must become
-  `INBOX.Projects.Q1` on B. The LIST delimiter of each side makes this
-  mechanical once discovered.
-- **SPECIAL-USE pairing.** "Sent" <-> "Sent Items" <-> localized names must pair
-  by the `\Sent` attribute, not the name. Same for Drafts/Trash/Junk/Archive.
-- **Namespace prefixes.** Strip / add a leading `INBOX.` where a server puts
-  everything under INBOX.
+**Also not done:**
+- **Namespace prefixes** (e.g. a server that nests everything under a leading
+  `INBOX.`) - not handled; such a server would need its own delimiter/prefix
+  convention worked out the way Maildir++'s `.`-nesting already is.
 - **Renames** look like delete + create to an append-only sync - out of scope;
   a periodic full rescan converges eventually.
-
-Suggested phasing: (1) `ListFolders`/`CreateFolder` on all four endpoints +
-`folders: "*"` + exclude list + delimiter translation, same-name assumption
-(~1-1.5 d); (2) SPECIAL-USE pairing + namespace prefixes + EWS folder filtering,
-tested against Dovecot + Exchange (~1-2 d); (3) subscription sync, per-user
-folder overrides (optional).
+- **Real-server testing** - only tested against the in-memory IMAP backend and
+  the PST/Maildir fixtures used elsewhere in this suite; not yet run against a
+  real Dovecot or Exchange IMAP4 install.
 
 ## Critical before production
 

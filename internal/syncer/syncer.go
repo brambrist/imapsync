@@ -113,7 +113,13 @@ func (s *Syncer) SyncUser(ctx context.Context, u config.User) {
 	}
 	defer sess.close()
 
-	for _, fp := range s.cfg.Folders {
+	pairs, err := s.resolveFolders(sess)
+	if err != nil {
+		s.recordErr(us, fmt.Errorf("user %s: %w", u.Name, err))
+		return
+	}
+
+	for _, fp := range pairs {
 		if err := ctx.Err(); err != nil {
 			s.recordErr(us, fmt.Errorf("user %s: processing interrupted: %w", u.Name, err))
 			return

@@ -217,6 +217,57 @@ func (e *pstEndpoint) Close() {
 	e.msgs = nil
 }
 
+// pstAdminFolders are structural/pseudo folders that WalkFolders returns but
+// that never hold real mail - skipped from ListFolders (case-insensitive).
+var pstAdminFolders = map[string]bool{
+	"":                        true, // the synthetic root
+	"root_folder":             true,
+	"top of personal folders": true,
+	"search root":             true,
+}
+
+// ListFolders implements FolderLister: every real (non-administrative,
+// non-search) folder in the archive, matching Select's existing flat
+// (non-hierarchical) name matching - PST folder identity here is by name
+// only, same limitation Select already has.
+func (e *pstEndpoint) ListFolders() ([]FolderInfo, error) {
+	var out []FolderInfo
+	err := e.pf.WalkFolders(func(f *pst.Folder) error {
+		if pstAdminFolders[strings.ToLower(strings.TrimSpace(f.Name))] {
+			return nil
+		}
+		if f.Identifier.GetType() == pst.IdentifierTypeSearchFolder {
+			return nil
+		}
+		out = append(out, FolderInfo{Name: f.Name, SpecialUse: pstSpecialUseOf(f.Name), Selectable: true})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pst %s: walking folders: %w", e.path, err)
+	}
+	return out, nil
+}
+
+// pstSpecialUseOf reverse-maps a PST folder name to a SPECIAL-USE token via
+// pstSpecial's candidate lists (case-insensitive), "" if none match.
+func pstSpecialUseOf(name string) string {
+	for tok, cands := range pstSpecial {
+		for _, c := range cands {
+			if strings.EqualFold(c, name) {
+				return tok
+			}
+		}
+	}
+	return ""
+}
+
+// CreateFolder: a PST archive is read-only, same pattern as Append.
+func (e *pstEndpoint) CreateFolder(name string) error {
+	return fmt.Errorf("pst %s: cannot create folder %q - a PST archive is read-only", e.path, name)
+}
+
+var _ FolderLister = (*pstEndpoint)(nil)
+
 // --- MAPI -> RFC 822 ---
 
 // mapiProps is the subset of properties.Message accessors used here. Only the

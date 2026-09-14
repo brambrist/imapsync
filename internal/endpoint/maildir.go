@@ -110,7 +110,10 @@ func (e *maildirEndpoint) Select(name string) (string, string, error) {
 	// the leading dot.
 	folder := "INBOX"
 	if path != e.root {
-		folder = strings.TrimPrefix(filepath.Base(path), ".")
+		// Canonicalize the dot-separated Maildir++ name to "/", consistent with
+		// ListFolders/CreateFolder - a name returned by one can be fed to Select.
+		dotted := strings.TrimPrefix(filepath.Base(path), ".")
+		folder = strings.ReplaceAll(dotted, ".", "/")
 	}
 	// Maildir has no validity: IDs (the unique part of the filename) are stable
 	// per spec, and drift is self-healed by the diff in ListIDs. Constant.
@@ -246,6 +249,69 @@ func (e *maildirEndpoint) Append(flags []string, date time.Time, body Literal) (
 func (e *maildirEndpoint) ReadOnly() bool { return false }
 
 func (e *maildirEndpoint) Close() {}
+
+// ListFolders implements FolderLister: INBOX (the root) plus every
+// Maildir++-style ".sub.folder" subdirectory (dot-separated nesting),
+// canonicalized to "/". A subfolder must actually look like a maildir (have a
+// cur/ directory) to be listed - a stray dotfile is not a folder.
+func (e *maildirEndpoint) ListFolders() ([]FolderInfo, error) {
+	out := []FolderInfo{{Name: "INBOX", Selectable: true}}
+
+	ents, err := os.ReadDir(e.root)
+	if err != nil {
+		return nil, fmt.Errorf("maildir %s: listing folders: %w", e.root, err)
+	}
+	for _, ent := range ents {
+		if !ent.IsDir() || !strings.HasPrefix(ent.Name(), ".") {
+			continue
+		}
+		dotted := strings.Trim(ent.Name(), ".")
+		if dotted == "" {
+			continue
+		}
+		if !isDir(filepath.Join(e.root, ent.Name(), "cur")) {
+			continue
+		}
+		out = append(out, FolderInfo{
+			Name:       strings.ReplaceAll(dotted, ".", "/"),
+			SpecialUse: maildirSpecialUseOf(dotted),
+			Selectable: true,
+		})
+	}
+	return out, nil
+}
+
+// maildirSpecialUseOf reverse-maps a Maildir++ subfolder name to a
+// SPECIAL-USE token via maildirSpecial (case-insensitive), "" if none match.
+func maildirSpecialUseOf(name string) string {
+	for tok, sub := range maildirSpecial {
+		if strings.EqualFold(sub, name) {
+			return tok
+		}
+	}
+	return ""
+}
+
+// CreateFolder implements FolderCreator: mkdir tmp/new/cur for a canonical
+// ("/"-delimited) name, translated to Maildir++'s dot-separated convention.
+func (e *maildirEndpoint) CreateFolder(name string) error {
+	dotted := strings.Trim(strings.ReplaceAll(name, "/", "."), ".")
+	if dotted == "" || strings.EqualFold(name, "INBOX") {
+		return nil // the root always exists
+	}
+	path := filepath.Join(e.root, "."+dotted)
+	for _, sub := range []string{"tmp", "new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(path, sub), 0o700); err != nil {
+			return fmt.Errorf("maildir %s: creating folder %q: %w", e.root, name, err)
+		}
+	}
+	return nil
+}
+
+var (
+	_ FolderLister  = (*maildirEndpoint)(nil)
+	_ FolderCreator = (*maildirEndpoint)(nil)
+)
 
 // --- helpers ---
 

@@ -57,6 +57,29 @@ type Endpoint interface {
 	Close()
 }
 
+// FolderInfo describes one discovered folder in a canonical form shared
+// across endpoint types: Name is always "/"-delimited hierarchy (e.g.
+// "Archive/2024"), regardless of the transport's own native delimiter -
+// translating to/from that is each endpoint's own job.
+type FolderInfo struct {
+	Name       string // canonical, "/"-delimited
+	SpecialUse string // RFC 6154 token ("\Sent" etc.), "" if none
+	Selectable bool   // false for a structural-only container (e.g. IMAP \Noselect)
+}
+
+// FolderLister is implemented by endpoints that can enumerate every folder -
+// imap, maildir, pst (not ews - EWS has no folder discovery here). Used for
+// full-mailbox sync (config.Config.SyncAllFolders).
+type FolderLister interface {
+	ListFolders() ([]FolderInfo, error)
+}
+
+// FolderCreator is implemented by writable endpoints that can create a
+// missing folder - imap, maildir (not pst, read-only, and not ews).
+type FolderCreator interface {
+	CreateFolder(name string) error
+}
+
 // Backend is a session factory for one side (server + transport type).
 type Backend interface {
 	// Connect establishes a session for user (authzid for IMAP).

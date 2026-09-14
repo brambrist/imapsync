@@ -140,10 +140,18 @@ server is `imap` (default), `maildir`, `ews` or `pst`, and may differ between
 sides. `pst` is read-only (import source only); `direction` (`both` / `a-to-b` /
 `b-to-a`) controls which way missing messages are copied.
 
+`sync_all_folders: true` replaces the explicit `folders:` list with automatic
+discovery + pairing + creation across the whole mailbox (`imap`/`maildir`/
+`pst` only - not `ews`); `folder_exclude` skips folders by name or SPECIAL-USE
+token. See `internal/syncer/discover.go` and the README section of the same
+name.
+
 ## Resolved design questions
 
 1. **Folder name mapping A<->B.** An explicit list of pairs
-   `folders: [{a: "Sent", b: "Sent Items"}]`, global for all users.
+   `folders: [{a: "Sent", b: "Sent Items"}]`, global for all users. Or
+   `sync_all_folders: true` for automatic discovery/pairing/creation (imap/
+   maildir/pst only) - see above.
 2. **Surrogate hash composition.** `Date (UTC unix) + Subject (trim, as is) +
    From (normalized address)`. Re:/Fwd: are left alone. Messages without a Date
    use unix=0.

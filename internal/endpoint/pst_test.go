@@ -81,6 +81,49 @@ func TestPSTSelectAndList(t *testing.T) {
 	}
 }
 
+func TestPSTListFoldersAndCreateFolder(t *testing.T) {
+	ep := openPST(t, testPST(t))
+	defer ep.Close()
+
+	lister, ok := ep.(FolderLister)
+	if !ok {
+		t.Fatal("pstEndpoint should implement FolderLister")
+	}
+
+	folders, err := lister.ListFolders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]FolderInfo{}
+	for _, f := range folders {
+		if pstAdminFolders[strings.ToLower(f.Name)] {
+			t.Errorf("administrative folder %q should not be listed", f.Name)
+		}
+		byName[f.Name] = f
+	}
+	if _, ok := byName["Drafts"]; !ok {
+		t.Errorf("Drafts missing: %+v", folders)
+	}
+	if got := byName["Sent Messages"].SpecialUse; got != `\Sent` {
+		t.Errorf("Sent Messages SpecialUse = %q, want \\Sent", got)
+	}
+	if _, ok := byName["SPAM Search Folder 2"]; ok {
+		t.Error("a search folder should not be listed")
+	}
+
+	// a PST is read-only - never a FolderCreator worth using.
+	if !ep.ReadOnly() {
+		t.Fatal("pst endpoint must report ReadOnly")
+	}
+	creator, ok := ep.(FolderCreator)
+	if !ok {
+		t.Fatal("pstEndpoint should still implement CreateFolder (erroring), matching Append's pattern")
+	}
+	if err := creator.CreateFolder("NewFolder"); err == nil {
+		t.Fatal("CreateFolder on a read-only PST should fail")
+	}
+}
+
 func TestPSTFolderResolution(t *testing.T) {
 	ep := openPST(t, testPST(t))
 	defer ep.Close()

@@ -133,3 +133,26 @@ func (e *imapEndpoint) Append(flags []string, date time.Time, body Literal) (str
 func (e *imapEndpoint) ReadOnly() bool { return false }
 
 func (e *imapEndpoint) Close() { e.cl.Logout() }
+
+// ListFolders implements FolderLister.
+func (e *imapEndpoint) ListFolders() ([]FolderInfo, error) {
+	infos, err := e.cl.ListFolders()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FolderInfo, len(infos))
+	for i, fi := range infos {
+		out[i] = FolderInfo{Name: fi.Name, SpecialUse: fi.SpecialUse, Selectable: fi.Selectable}
+	}
+	return out, nil
+}
+
+// CreateFolder implements FolderCreator.
+func (e *imapEndpoint) CreateFolder(name string) error {
+	return e.cl.CreateMailbox(name)
+}
+
+var (
+	_ FolderLister  = (*imapEndpoint)(nil)
+	_ FolderCreator = (*imapEndpoint)(nil)
+)

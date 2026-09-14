@@ -341,6 +341,35 @@ Dovecot/Cyrus-style servers. Against Exchange:
   set `master_user`/`master_pass` to that mailbox's own credentials and
   `user_a`/`user_b` to its own address.
 
+### Full-mailbox sync (`sync_all_folders`)
+
+By default `folders:` is an explicit list of name pairs. Set
+`sync_all_folders: true` instead to sync the whole mailbox: every cycle, both
+sides' folders are discovered and paired automatically -
+
+1. by **SPECIAL-USE attribute** first, so e.g. "Sent" on one side pairs with
+   "Sent Items" on the other without needing to know either literal name;
+2. otherwise by **case-insensitive name**.
+
+A folder that exists on only one side is **created on the other** (mirroring
+the message-level rule: a read-only endpoint, or a `direction` that disallows
+that way, is never a creation target). `folder_exclude` skips folders by name
+or SPECIAL-USE token:
+
+```yaml
+sync_all_folders: true
+folder_exclude: ["Trash", "Junk", "\\Junk", "\\Trash"]
+```
+
+**Requires folder discovery on both sides - `imap`, `maildir`, `pst`. Not
+`ews`** (rejected at config-validation time): EWS has no `ListFolders`/
+`CreateFolder` here, so it stays list-based-only for now.
+
+Folder names are canonicalized to a `/`-delimited hierarchy across all three
+supported transports regardless of their native separator (Maildir++'s `.`,
+an IMAP server's own LIST delimiter) - so e.g. `Archive/2024` means the same
+thing, and round-trips through `Select`/`CreateFolder`, on any of them.
+
 ### Config from SQLite
 
 ```yaml
@@ -467,7 +496,8 @@ internal/
                      master login, resolve-folder, fetch/UID SEARCH, append; hashes
   dedup/             multi-key folder index, delta computation
   stats/             thread-safe counters, periodic output
-  syncer/            one-user sync (full and incremental reconciliation) + pool
+  syncer/            one-user sync (full and incremental reconciliation) + pool;
+                     discover.go - full-mailbox folder discovery/pairing/creation
   store/             local SQLite DB: config, state cache, per-user sync status
 ```
 

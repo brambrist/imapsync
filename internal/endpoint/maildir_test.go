@@ -161,3 +161,74 @@ func TestExpandUser(t *testing.T) {
 }
 
 func fmtFlags(fs []string) string { return strings.Join(fs, " ") }
+
+func TestMaildirListFoldersAndCreate(t *testing.T) {
+	b, root := newMaildir(t)
+	ep, err := b.Connect(context.Background(), "u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Close()
+
+	lister, ok := ep.(FolderLister)
+	if !ok {
+		t.Fatal("maildirEndpoint should implement FolderLister")
+	}
+	creator, ok := ep.(FolderCreator)
+	if !ok {
+		t.Fatal("maildirEndpoint should implement FolderCreator")
+	}
+
+	// pre-existing SPECIAL-USE-mapped and plain nested subfolders.
+	for _, sub := range []string{".Sent", ".Archive.2024"} {
+		for _, d := range []string{"tmp", "new", "cur"} {
+			if err := os.MkdirAll(filepath.Join(root, sub, d), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	folders, err := lister.ListFolders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]FolderInfo{}
+	for _, f := range folders {
+		byName[f.Name] = f
+	}
+	if _, ok := byName["INBOX"]; !ok {
+		t.Errorf("INBOX missing: %+v", folders)
+	}
+	if got := byName["Sent"].SpecialUse; got != `\Sent` {
+		t.Errorf("Sent SpecialUse = %q, want \\Sent", got)
+	}
+	if _, ok := byName["Archive/2024"]; !ok {
+		t.Errorf("nested Archive/2024 (canonical, from Maildir++ .Archive.2024) missing: %+v", folders)
+	}
+
+	// create a new nested folder and confirm it shows up.
+	if err := creator.CreateFolder("Projects/Q1"); err != nil {
+		t.Fatal(err)
+	}
+	if !isDir(filepath.Join(root, ".Projects.Q1", "cur")) {
+		t.Fatal("CreateFolder did not create the expected Maildir++ directory")
+	}
+	folders, err = lister.ListFolders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range folders {
+		if f.Name == "Projects/Q1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Projects/Q1 not listed after CreateFolder: %+v", folders)
+	}
+
+	// selecting the newly created folder should work end to end too.
+	if folder, _, err := ep.Select("Projects/Q1"); err != nil || folder != "Projects/Q1" {
+		t.Errorf("Select(Projects/Q1) => %q %v", folder, err)
+	}
+}

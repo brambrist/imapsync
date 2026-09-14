@@ -120,3 +120,43 @@ func TestSyncUserPSTDirectionForced(t *testing.T) {
 		t.Errorf("imported %d from the PST, want 6", r.Total.CopiedAToB)
 	}
 }
+
+// TestSyncUserAllFoldersPSTToMaildir proves sync_all_folders works against a
+// read-only PST source: folders are discovered and created on the writable
+// Maildir side, but the read-only side is never a folder-creation target
+// (mirrors the message-level ReadOnly() rule).
+func TestSyncUserAllFoldersPSTToMaildir(t *testing.T) {
+	pstPath := unpackPST(t)
+	rootB := makeMaildir(t)
+
+	cfg := &config.Config{
+		ServerA:        config.Server{Type: config.EndpointPST, Root: pstPath},
+		ServerB:        config.Server{Type: config.EndpointMaildir, Root: rootB},
+		FetchBatchSize: 50,
+		HashHeader:     "X-Imapsync-Hash",
+		SyncAllFolders: true,
+	}
+	usr := config.User{Name: "u", UserA: "u@corp", UserB: "u"}
+
+	coll := stats.New()
+	coll.BeginCycle()
+	New(cfg, coll, t.Logf).SyncUser(context.Background(), usr)
+
+	if r := coll.Snapshot(); r.Total.Errors != 0 || r.Total.CopiedBToA != 0 {
+		t.Fatalf("counters: %+v (%+v)", r.Total, r.Users)
+	}
+
+	for _, name := range []string{".Drafts", ".Sent Messages"} {
+		if fi, err := os.Stat(filepath.Join(rootB, name, "cur")); err != nil || !fi.IsDir() {
+			t.Errorf("%s should have been auto-created on the maildir side", name)
+		}
+	}
+
+	// idempotent second cycle - no duplicate folder-creation errors.
+	c2 := stats.New()
+	c2.BeginCycle()
+	New(cfg, c2, t.Logf).SyncUser(context.Background(), usr)
+	if r := c2.Snapshot(); r.Total.Errors != 0 || r.Total.CopiedAToB != 0 {
+		t.Errorf("cycle 2 should be a no-op: %+v", r.Total)
+	}
+}

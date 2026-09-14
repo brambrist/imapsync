@@ -243,6 +243,56 @@ workers: 1
 	}
 }
 
+func TestSyncAllFolders(t *testing.T) {
+	ok := `
+server_a: {type: maildir, root: /m/%u}
+server_b: {host: b.example, master_user: m, master_pass: p}
+users:
+  - {name: u1, user_a: a1, user_b: b1}
+  - {name: u2, user_a: a2, user_b: b2}
+workers: 1
+sync_all_folders: true
+folder_exclude: ["Trash", "\\Junk"]
+`
+	cfg, err := Load(writeTemp(t, ok))
+	if err != nil {
+		t.Fatalf("sync_all_folders with imap/maildir should be valid: %v", err)
+	}
+	if !cfg.SyncAllFolders {
+		t.Error("SyncAllFolders should be true")
+	}
+	if len(cfg.FolderExclude) != 2 {
+		t.Errorf("FolderExclude = %v", cfg.FolderExclude)
+	}
+
+	// ews on either side is rejected.
+	ewsA := `
+server_a: {type: ews, ews_url: "https://x/EWS/Exchange.asmx", master_user: m, master_pass: p}
+server_b: {type: maildir, root: /m/%u}
+users:
+  - {name: u1, user_a: a1, user_b: b1}
+  - {name: u2, user_a: a2, user_b: b2}
+workers: 1
+sync_all_folders: true
+`
+	if _, err := Load(writeTemp(t, ewsA)); err == nil {
+		t.Fatal("expected an error: sync_all_folders with server_a type ews")
+	}
+
+	ewsB := `
+server_a: {type: maildir, root: /m/%u}
+server_b: {type: ews, ews_url: "https://x/EWS/Exchange.asmx", master_user: m, master_pass: p}
+users:
+  - {name: u1, user_a: a1, user_b: b1}
+  - {name: u2, user_a: a2, user_b: b2}
+workers: 1
+sync_all_folders: true
+`
+	if _, err := Load(writeTemp(t, ewsB)); err == nil {
+		t.Fatal("expected an error: sync_all_folders with server_b type ews")
+	}
+}
+
 func TestParseTLSVersion(t *testing.T) {
 	cases := []struct {
 		in      string
