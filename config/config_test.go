@@ -201,6 +201,48 @@ workers: 1
 	}
 }
 
+func TestUserPathOverride(t *testing.T) {
+	ok := `
+server_a:
+  type: pst
+  root: "%u"
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: u1@a, user_b: u1@b, path_a: /archives/one-off-name.pst}
+  - {name: u2, user_a: u2@a, user_b: u2@b}
+workers: 1
+direction: a-to-b
+`
+	cfg, err := Load(writeTemp(t, ok))
+	if err != nil {
+		t.Fatalf("path_a on a pst server should be valid: %v", err)
+	}
+	if got := cfg.Users[0].ConnectAs("a"); got != "/archives/one-off-name.pst" {
+		t.Errorf("ConnectAs(a) with path_a set = %q", got)
+	}
+	if got := cfg.Users[1].ConnectAs("a"); got != "u2@a" {
+		t.Errorf("ConnectAs(a) without path_a set = %q, want the plain user_a", got)
+	}
+	if got := cfg.Users[0].ConnectAs("b"); got != "u1@b" {
+		t.Errorf("ConnectAs(b) without path_b set = %q, want the plain user_b", got)
+	}
+
+	// path_a against an imap server makes no sense - reject it.
+	bad := `
+server_a: {host: a.example, master_user: m, master_pass: p}
+server_b: {host: b.example, master_user: m, master_pass: p}
+folders: [{a: Sent, b: Sent}]
+users:
+  - {name: u1, user_a: a, user_b: b, path_a: /archives/one-off-name.pst}
+  - {name: u2, user_a: a, user_b: b}
+workers: 1
+`
+	if _, err := Load(writeTemp(t, bad)); err == nil {
+		t.Fatal("expected an error: path_a with a non-maildir/pst server_a")
+	}
+}
+
 func TestParseTLSVersion(t *testing.T) {
 	cases := []struct {
 		in      string

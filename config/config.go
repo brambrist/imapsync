@@ -88,10 +88,35 @@ type FolderPair struct {
 
 // User is one synchronized user: a logical name for logs and the addresses
 // (authzid) on each server.
+//
+// PathA/PathB override the maildir/pst root template for this user
+// specifically, on the matching side (type: maildir or pst only). Use them
+// when archive files/directories don't follow a %u/%n/%d-derivable naming
+// scheme - e.g. per-employee PST exports named arbitrarily. When set, that
+// side's Server.Root should be exactly "%u" (or a template containing %u and
+// nothing else) so the override value passes through unchanged instead of
+// being re-split on "@" for %n/%d.
 type User struct {
 	Name  string `yaml:"name"`
 	UserA string `yaml:"user_a"`
 	UserB string `yaml:"user_b"`
+	PathA string `yaml:"path_a"`
+	PathB string `yaml:"path_b"`
+}
+
+// ConnectAs returns what to pass to Backend.Connect for side "a"/"b": the
+// path override if set, otherwise the plain user_a/user_b identity.
+func (u User) ConnectAs(side string) string {
+	if side == "b" {
+		if u.PathB != "" {
+			return u.PathB
+		}
+		return u.UserB
+	}
+	if u.PathA != "" {
+		return u.PathA
+	}
+	return u.UserA
 }
 
 // Sources for the user and folder lists.
@@ -365,6 +390,12 @@ func (c *Config) ValidateEntities() error {
 		if strings.TrimSpace(u.UserA) == "" || strings.TrimSpace(u.UserB) == "" {
 			return fmt.Errorf("users[%d] (%s): empty user_a or user_b", i, u.Name)
 		}
+		if u.PathA != "" && !pathOverridable(c.ServerA.Type) {
+			return fmt.Errorf("users[%d] (%s): path_a is only valid when server_a is type maildir or pst", i, u.Name)
+		}
+		if u.PathB != "" && !pathOverridable(c.ServerB.Type) {
+			return fmt.Errorf("users[%d] (%s): path_b is only valid when server_b is type maildir or pst", i, u.Name)
+		}
 		if _, dup := seen[u.Name]; dup {
 			return fmt.Errorf("users[%d]: duplicate name %q", i, u.Name)
 		}
@@ -511,6 +542,10 @@ func loadCACertPool(path string) (*x509.CertPool, error) {
 // readOnlyType reports whether an endpoint type can only be a sync source
 // (Append is unsupported).
 func readOnlyType(t string) bool { return t == EndpointPST }
+
+// pathOverridable reports whether a per-user path_a/path_b override applies to
+// this endpoint type - only the ones whose Root is a %u/%n/%d path template.
+func pathOverridable(t string) bool { return t == EndpointMaildir || t == EndpointPST }
 
 // Addr returns a human-readable endpoint address for logs.
 func (s Server) Addr() string {

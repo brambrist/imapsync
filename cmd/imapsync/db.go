@@ -36,15 +36,18 @@ func withStore(name string, args []string, setup func(*flag.FlagSet), fn func(*s
 }
 
 func cmdDBAddUser(args []string) error {
-	var name, a, b *string
+	var name, a, b, pathA, pathB *string
 	var disabled *bool
 	return withStore("db-add-user", args, func(fs *flag.FlagSet) {
 		name = fs.String("name", "", "logical user name")
 		a = fs.String("a", "", "address on server A (authzid)")
 		b = fs.String("b", "", "address on server B (authzid)")
+		pathA = fs.String("path-a", "", "override server A's maildir/pst root template for this user (see path_a)")
+		pathB = fs.String("path-b", "", "override server B's maildir/pst root template for this user (see path_b)")
 		disabled = fs.Bool("disabled", false, "add as disabled")
 	}, func(st *store.Store, _ *flag.FlagSet) error {
-		if err := st.UpsertUser(config.User{Name: *name, UserA: *a, UserB: *b}, !*disabled); err != nil {
+		u := config.User{Name: *name, UserA: *a, UserB: *b, PathA: *pathA, PathB: *pathB}
+		if err := st.UpsertUser(u, !*disabled); err != nil {
 			return err
 		}
 		fmt.Printf("user %q saved (enabled=%v)\n", *name, !*disabled)
@@ -91,7 +94,7 @@ func cmdDBImportYAML(args []string) error {
 func cmdDBImportCSV(args []string) error {
 	var usersCSV, foldersCSV *string
 	return withStore("db-import-csv", args, func(fs *flag.FlagSet) {
-		usersCSV = fs.String("users", "", "users CSV: name,user_a,user_b[,enabled]")
+		usersCSV = fs.String("users", "", "users CSV: name,user_a,user_b[,enabled[,path_a[,path_b]]]")
 		foldersCSV = fs.String("folders", "", "folder-pairs CSV: folder_a,folder_b")
 	}, func(st *store.Store, _ *flag.FlagSet) error {
 		if *usersCSV == "" && *foldersCSV == "" {
@@ -183,6 +186,12 @@ func importUsersCSV(st *store.Store, path string) (int, error) {
 		enabled := true
 		if len(rec) >= 4 {
 			enabled = parseBool(rec[3])
+		}
+		if len(rec) >= 5 {
+			u.PathA = strings.TrimSpace(rec[4])
+		}
+		if len(rec) >= 6 {
+			u.PathB = strings.TrimSpace(rec[5])
 		}
 		if err := st.UpsertUser(u, enabled); err != nil {
 			return n, fmt.Errorf("%s line %d: %w", path, i+1, err)
@@ -324,6 +333,9 @@ func cmdDBListRun(st *store.Store, _ *flag.FlagSet) error {
 	fmt.Printf("users (%d, including disabled):\n", len(users))
 	for _, u := range users {
 		fmt.Printf("  %s: %s | %s\n", u.Name, u.UserA, u.UserB)
+		if u.PathA != "" || u.PathB != "" {
+			fmt.Printf("      path_a: %s, path_b: %s\n", u.PathA, u.PathB)
+		}
 		if s, ok := statuses[u.Name]; ok {
 			fmt.Printf("      status: %s, run: %s", s.Status, fmtTime(s.LastRun))
 			if !s.LastOK.IsZero() {

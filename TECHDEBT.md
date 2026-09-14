@@ -71,6 +71,22 @@ resolution: exact -> SPECIAL-USE candidates -> `INBOX` alias -> case-insensitive
 Tests: `internal/endpoint/pst_test.go` + `internal/syncer/pst_test.go` against a
 gzipped copy of the public `support.pst` sample (`testdata/support.pst.gz`).
 
+**Per-user path override [DONE]:** `config.User.PathA`/`PathB` (`path_a`/
+`path_b` in YAML) override the maildir/pst root template for one user, for
+archive files that don't follow a `%u`/`%n`/`%d`-derivable naming scheme (e.g.
+arbitrarily named per-employee PST exports). `User.ConnectAs(side)` picks the
+override when set; `config.ValidateEntities` rejects it on a non-maildir/pst
+side. Also plumbed through `source: sqlite`: the `users` table gained
+`path_a`/`path_b` columns (`ensureUserPathColumns` migrates an existing DB via
+`ALTER TABLE`, additive - no data loss), `db-add-user` gained `-path-a`/
+`-path-b`, and the users CSV format gained optional trailing `path_a`/`path_b`
+columns. Without this, `db-import-yaml` would have silently dropped the
+override when moving a YAML config with `path_a` set into the DB. Tested in
+`config/config_test.go` (`TestUserPathOverride`), `internal/store/store_test.go`
+(`TestUserPathAB`, `TestMigratesUsersTablePreDatingPathColumns`), and
+`internal/syncer/maildir_test.go` (`TestSyncUserPathOverride`, proving the
+override wins over the templated `user_a`/`user_b` value end to end).
+
 What's left to polish:
 
 - **DKIM / signatures break** - the body is rebuilt from properties, so the

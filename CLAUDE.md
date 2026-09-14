@@ -104,6 +104,7 @@ imapsync/
 ```
 imapsync run -config cfg.yaml               run the daemon (default subcommand)
 imapsync db-add-user     -db x.db -name ivanov -a ivanov@a -b ivanov@b [-disabled]
+                         [-path-a ...] [-path-b ...]
 imapsync db-add-folder   -db x.db -a Sent -b "Sent Items"
 imapsync db-import-yaml   -db x.db -config cfg.yaml     move the YAML lists into the DB
 imapsync db-import-csv    -db x.db [-users u.csv] [-folders f.csv]
@@ -116,8 +117,12 @@ imapsync db-resume-user  -db x.db -name ivanov      (lift the error-streak stop)
 imapsync db-vacuum       -db x.db
 ```
 
-CSV: `users` - `name,user_a,user_b[,enabled]`; `folders` - `folder_a,folder_b`.
-Lines with '#' and a header row are skipped.
+CSV: `users` - `name,user_a,user_b[,enabled[,path_a[,path_b]]]`; `folders` -
+`folder_a,folder_b`. Lines with '#' and a header row are skipped.
+
+`path_a`/`path_b` override a maildir/pst root template for one user (files
+that don't follow a %u/%n/%d-derivable naming scheme); valid only when the
+matching side is type maildir or pst.
 
 With `source: sqlite` the daemon re-reads the lists from the DB before every
 cycle (`Pool.reload`) - `db-*` changes are picked up without a restart. Run

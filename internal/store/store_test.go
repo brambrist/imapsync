@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -109,5 +110,100 @@ func TestRejectsEmptyFields(t *testing.T) {
 	}
 	if err := st.UpsertFolderPair(config.FolderPair{A: "  ", B: "b"}); err == nil {
 		t.Error("expected an error on empty folder name")
+	}
+}
+
+func TestUserPathAB(t *testing.T) {
+	st := openTemp(t)
+
+	if err := st.UpsertUser(config.User{Name: "ivanov", UserA: "i@a", UserB: "i@b", PathA: "/archives/ivanov.pst"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertUser(config.User{Name: "petrov", UserA: "p@a", UserB: "p@b"}, true); err != nil {
+		t.Fatal(err) // no path override - should round-trip as empty, not error
+	}
+
+	users, err := st.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]config.User{}
+	for _, u := range users {
+		byName[u.Name] = u
+	}
+	if got := byName["ivanov"].PathA; got != "/archives/ivanov.pst" {
+		t.Errorf("PathA = %q", got)
+	}
+	if got := byName["ivanov"].PathB; got != "" {
+		t.Errorf("PathB should be empty, got %q", got)
+	}
+	if got := byName["petrov"].PathA; got != "" {
+		t.Errorf("petrov PathA should be empty, got %q", got)
+	}
+
+	// updating clears a previously set override.
+	if err := st.UpsertUser(config.User{Name: "ivanov", UserA: "i@a", UserB: "i@b"}, true); err != nil {
+		t.Fatal(err)
+	}
+	users, _ = st.ListUsers()
+	for _, u := range users {
+		if u.Name == "ivanov" && u.PathA != "" {
+			t.Errorf("PathA should have been cleared, got %q", u.PathA)
+		}
+	}
+}
+
+// TestMigratesUsersTablePreDatingPathColumns simulates an existing DB created
+// before path_a/path_b existed: ensureUserPathColumns must add them without
+// losing data.
+func TestMigratesUsersTablePreDatingPathColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// Build a DB with the old schema by hand (no path_a/path_b, no state
+	// tables), pre-populated with a user.
+	oldSchema := `
+CREATE TABLE users (
+    name    TEXT PRIMARY KEY,
+    user_a  TEXT NOT NULL,
+    user_b  TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO users (name, user_a, user_b, enabled) VALUES ('ivanov', 'i@a', 'i@b', 1);
+`
+	db, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open should migrate the old users table: %v", err)
+	}
+	defer st.Close()
+
+	users, err := st.AllUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].Name != "ivanov" || users[0].UserA != "i@a" {
+		t.Fatalf("existing data lost after migration: %+v", users)
+	}
+	if users[0].PathA != "" || users[0].PathB != "" {
+		t.Errorf("new columns should default empty, got PathA=%q PathB=%q", users[0].PathA, users[0].PathB)
+	}
+
+	// the migrated table must accept writes to the new columns.
+	if err := st.UpsertUser(config.User{Name: "ivanov", UserA: "i@a", UserB: "i@b", PathA: "/archives/ivanov.pst"}, true); err != nil {
+		t.Fatal(err)
+	}
+	users, _ = st.AllUsers()
+	if users[0].PathA != "/archives/ivanov.pst" {
+		t.Errorf("PathA after migration+update = %q", users[0].PathA)
 	}
 }

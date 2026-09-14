@@ -205,6 +205,26 @@ Exchange -> Dovecot, etc.):
   **Read-only**: it can only be a sync source, so pair it with a writable
   endpoint and set `direction: a-to-b` (or `b-to-a`). A one-way Outlook import.
 
+**Per-user path override** (`path_a`/`path_b`, only valid when the matching
+side is `maildir` or `pst`): when archive files don't follow a `%u`/`%n`/`%d`
+naming pattern - e.g. arbitrarily named per-employee PST exports - set that
+side's `root` to just `"%u"` and give each user their own literal path:
+
+```yaml
+server_a:
+  type: pst
+  root: "%u"
+users:
+  - name: ivanov
+    user_a: ivanov@corp.ru
+    user_b: ivanov@corp.ru
+    path_a: /var/archives/2019-ivanov-export.pst   # this user's actual file
+```
+
+`path_a`/`path_b` win over `user_a`/`user_b` when resolving that side's
+template; `user_a`/`user_b` are still required (used for logs and, on the
+other side, real impersonation).
+
 **`min_tls_version`/`max_tls_version`** (per side, `imap` and `ews` only) bound
 the TLS protocol version - `"1.0"`, `"1.1"`, `"1.2"` or `"1.3"`. Both are
 optional; unset is effectively "TLS 1.2 minimum, no cap" (Go's default). Needed
@@ -338,6 +358,7 @@ separate commands:
 # one at a time, via parameters
 imapsync db-add-folder -db imapsync.db -a Sent -b "Sent Items"
 imapsync db-add-user   -db imapsync.db -name ivanov -a ivanov@corp.ru -b ivanov@corp.ru [-disabled]
+                       [-path-a /archives/ivanov.pst] [-path-b ...]   # see path_a/path_b below
 
 # move everything from YAML
 imapsync db-import-yaml -db imapsync.db -config config.yaml
@@ -357,12 +378,14 @@ imapsync db-resume-user   -db imapsync.db -name ivanov   # lift the stop after a
 imapsync db-vacuum        -db imapsync.db
 ```
 
-CSV formats (lines with `#` and a header row are skipped):
+CSV formats (lines with `#` and a header row are skipped). `enabled`,
+`path_a`, `path_b` are all optional trailing columns:
 
 ```
 # users.csv
-name,user_a,user_b,enabled
+name,user_a,user_b,enabled,path_a,path_b
 ivanov,ivanov@corp.ru,ivanov@corp.ru,1
+petrov,petrov@corp.ru,petrov@corp.ru,1,/archives/petrov.pst
 
 # folders.csv
 folder_a,folder_b

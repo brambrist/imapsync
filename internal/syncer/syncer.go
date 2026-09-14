@@ -147,12 +147,12 @@ type session struct {
 }
 
 func (sess *session) connect() bool {
-	a, err := sess.s.dial(sess.ctx, sess.s.backendA, sess.u.UserA)
+	a, err := sess.s.dial(sess.ctx, sess.s.backendA, sess.u.ConnectAs("a"))
 	if err != nil {
 		sess.s.recordErr(sess.us, fmt.Errorf("user %s: %w", sess.u.Name, err))
 		return false
 	}
-	b, err := sess.s.dial(sess.ctx, sess.s.backendB, sess.u.UserB)
+	b, err := sess.s.dial(sess.ctx, sess.s.backendB, sess.u.ConnectAs("b"))
 	if err != nil {
 		a.Close()
 		sess.s.recordErr(sess.us, fmt.Errorf("user %s: %w", sess.u.Name, err))

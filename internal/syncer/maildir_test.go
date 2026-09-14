@@ -141,6 +141,40 @@ func TestSyncUserDirectionAToB(t *testing.T) {
 	}
 }
 
+// TestSyncUserPathOverride proves config.User.PathA wins over UserA when
+// resolving a maildir/pst root template - the mechanism behind per-user PST
+// archives that don't follow a %u/%n/%d-derivable naming scheme.
+func TestSyncUserPathOverride(t *testing.T) {
+	rootA := makeMaildir(t)  // what path_a points at - should be used
+	wrongA := makeMaildir(t) // what user_a alone would resolve to - must NOT be used
+	rootB := makeMaildir(t)
+
+	seedMaildir(t, rootA, "right one", "right@corp")
+	seedMaildir(t, wrongA, "wrong one", "wrong@corp")
+
+	cfg := &config.Config{
+		ServerA:        config.Server{Type: config.EndpointMaildir, Root: "%u"},
+		ServerB:        config.Server{Type: config.EndpointMaildir, Root: rootB},
+		FetchBatchSize: 10,
+		HashHeader:     "X-Imapsync-Hash",
+		Folders:        []config.FolderPair{{A: "INBOX", B: "INBOX"}},
+		Direction:      config.DirectionAToB,
+	}
+	usr := config.User{Name: "u", UserA: wrongA, UserB: "u", PathA: rootA}
+
+	coll := stats.New()
+	coll.BeginCycle()
+	New(cfg, coll, t.Logf).SyncUser(context.Background(), usr)
+
+	if r := coll.Snapshot(); r.Total.CopiedAToB != 1 || r.Total.Errors != 0 {
+		t.Fatalf("counters: %+v (%+v)", r.Total, r.Users)
+	}
+	want := []string{"right@corp"}
+	if got := maildirMsgIDs(t, rootB); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("B = %v, want %v - path_a should win over user_a", got, want)
+	}
+}
+
 func TestSyncUserIMAPToMaildir(t *testing.T) {
 	cert := selfSignedCert(t)
 	srvA := startIMAP(t, cert) // IMAP: INBOX with its original message + our own

@@ -31,6 +31,23 @@ server_b:
 #   type: pst
 #   root: /var/archives/%d/%n.pst    # same %u/%n/%d placeholders as maildir
 # direction: a-to-b
+#
+# If archive files don't follow a %u/%n/%d-derivable naming scheme (e.g.
+# arbitrarily named per-employee PST exports), set root to just "%u" and give
+# each user an explicit path_a/path_b instead:
+# server_a:
+#   type: pst
+#   root: "%u"
+# users:
+#   - name: ivanov
+#     user_a: ivanov@corp.ru        # still needed for logs/dedup context
+#     user_b: ivanov@corp.ru
+#     path_a: /var/archives/2019-ivanov-export.pst   # this user's actual file
+#   - name: petrov
+#     user_a: petrov@corp.ru
+#     user_b: petrov@corp.ru
+#     path_a: /var/archives/petrov_old_laptop.pst
+# path_a/path_b are only valid when the matching side is type maildir or pst.
 
 # min_tls_version / max_tls_version bound the TLS protocol version for a server
 # (imap and ews only). Optional, per side, default is unset (effectively TLS 1.2

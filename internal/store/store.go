@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS users (
     name    TEXT PRIMARY KEY,
     user_a  TEXT NOT NULL,
     user_b  TEXT NOT NULL,
+    path_a  TEXT NOT NULL DEFAULT '',
+    path_b  TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1
 );
 `
@@ -69,6 +71,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrating sqlite %s: %w", path, err)
 	}
+	if err := ensureUserPathColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrating sqlite %s: %w", path, err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("creating sqlite schema %s: %w", path, err)
@@ -101,6 +107,53 @@ func migrateState(db *sql.DB) error {
 	return nil
 }
 
+// ensureUserPathColumns adds path_a/path_b to an existing users table that
+// predates them (ALTER TABLE ... ADD COLUMN, additive - no data loss). A
+// brand-new DB gets them for free from the schema constant below, so this is
+// a no-op when the table does not exist yet.
+func ensureUserPathColumns(db *sql.DB) error {
+	var name string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='users'`).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking for the users table: %w", err)
+	}
+
+	rows, err := db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return fmt.Errorf("reading users table schema: %w", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var colName, colType string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("reading users table schema: %w", err)
+		}
+		have[colName] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("reading users table schema: %w", err)
+	}
+	rows.Close()
+
+	for _, col := range []string{"path_a", "path_b"} {
+		if have[col] {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE users ADD COLUMN %s TEXT NOT NULL DEFAULT ''`, col)); err != nil {
+			return fmt.Errorf("adding column %s to users: %w", col, err)
+		}
+	}
+	return nil
+}
+
 // Close closes the DB and releases the advisory lock if one was taken.
 func (s *Store) Close() error {
 	err := s.db.Close()
@@ -112,7 +165,9 @@ func (s *Store) Close() error {
 	return err
 }
 
-// UpsertUser inserts or updates a user by name.
+// UpsertUser inserts or updates a user by name. PathA/PathB (path_a/path_b) -
+// see config.User - are optional per-user overrides for a maildir/pst root
+// template.
 func (s *Store) UpsertUser(u config.User, enabled bool) error {
 	name := strings.TrimSpace(u.Name)
 	a := strings.TrimSpace(u.UserA)
@@ -125,9 +180,10 @@ func (s *Store) UpsertUser(u config.User, enabled bool) error {
 		en = 1
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO users (name, user_a, user_b, enabled) VALUES (?, ?, ?, ?)
-		ON CONFLICT(name) DO UPDATE SET user_a=excluded.user_a, user_b=excluded.user_b, enabled=excluded.enabled`,
-		name, a, b, en)
+		INSERT INTO users (name, user_a, user_b, path_a, path_b, enabled) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET user_a=excluded.user_a, user_b=excluded.user_b,
+			path_a=excluded.path_a, path_b=excluded.path_b, enabled=excluded.enabled`,
+		name, a, b, strings.TrimSpace(u.PathA), strings.TrimSpace(u.PathB), en)
 	if err != nil {
 		return fmt.Errorf("upserting user %q: %w", name, err)
 	}
@@ -175,7 +231,7 @@ func (s *Store) AllUsers() ([]config.User, error) {
 }
 
 func (s *Store) queryUsers(onlyEnabled bool) ([]config.User, error) {
-	q := `SELECT name, user_a, user_b FROM users`
+	q := `SELECT name, user_a, user_b, path_a, path_b FROM users`
 	if onlyEnabled {
 		q += ` WHERE enabled=1`
 	}
@@ -189,7 +245,7 @@ func (s *Store) queryUsers(onlyEnabled bool) ([]config.User, error) {
 	var out []config.User
 	for rows.Next() {
 		var u config.User
-		if err := rows.Scan(&u.Name, &u.UserA, &u.UserB); err != nil {
+		if err := rows.Scan(&u.Name, &u.UserA, &u.UserB, &u.PathA, &u.PathB); err != nil {
 			return nil, fmt.Errorf("reading user row: %w", err)
 		}
 		out = append(out, u)
