@@ -69,7 +69,9 @@ imapsync/
                              abstraction); the syncer only knows about these
       imap.go                IMAP implementation on top of mailbox
       maildir.go             Maildir/Maildir++ on disk (type: maildir, root)
-      ews.go                 Exchange Web Services (type: ews, SOAP, Basic auth)
+      ews.go                 Exchange Web Services (type: ews, SOAP)
+      ews_auth.go            EWS auth: basic | ntlm (go-ntlmssp) | oauth2
+                             (client credentials, shared token cache)
       ewstest/               a fake EWS server for tests
       pst.go                 local PST/OST archive, read-only (type: pst, root);
                              one-way import source, MAPI -> RFC 822
@@ -188,6 +190,7 @@ github.com/emersion/go-sasl             // SASL PLAIN with authzid (impersonatio
 gopkg.in/yaml.v3                         // config
 modernc.org/sqlite                      // local config/state DB (no CGO)
 github.com/mooijtech/go-pst/v6           // PST/OST reader for type: pst (no CGO)
+github.com/Azure/go-ntlmssp              // NTLM for ews_auth: ntlm
 ```
 
 ## Conventions

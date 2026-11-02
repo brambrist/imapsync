@@ -16,12 +16,12 @@ import (
 
 // ewsBackend - the ews endpoint type (Exchange Web Services, SOAP over HTTPS).
 // Impersonation: a service account with the ApplicationImpersonation role plus
-// the SOAP header ExchangeImpersonation. Authentication: HTTP Basic.
+// the SOAP header ExchangeImpersonation. Authentication: Basic, NTLM or OAuth2
+// client credentials (see ews_auth.go).
 type ewsBackend struct {
 	url         string
 	srv         config.Server // kept for TLSConfig (min/max TLS version)
-	user        string
-	pass        string
+	auth        ewsAuth       // shared by all connections (OAuth2 token cache)
 	insecureTLS bool
 	timeout     time.Duration
 	batch       int
@@ -37,7 +37,8 @@ func newEWSBackend(srv config.Server, ioTimeout time.Duration, insecureTLS bool,
 	if batch < 1 {
 		batch = 50
 	}
-	return &ewsBackend{url: url, srv: srv, user: srv.MasterUser, pass: srv.MasterPass, insecureTLS: insecureTLS, timeout: ioTimeout, batch: batch, debug: debug, logf: logf}
+	auth := newEWSAuth(srv, ioTimeout, debug, logf)
+	return &ewsBackend{url: url, srv: srv, auth: auth, insecureTLS: insecureTLS, timeout: ioTimeout, batch: batch, debug: debug, logf: logf}
 }
 
 func (b *ewsBackend) Addr() string { return b.url }
@@ -49,10 +50,9 @@ func (b *ewsBackend) Connect(_ context.Context, user string) (Endpoint, error) {
 	}
 	tr := &http.Transport{TLSClientConfig: tlsCfg}
 	cl := &ewsClient{
-		http:        &http.Client{Transport: tr, Timeout: b.timeout},
+		http:        &http.Client{Transport: b.auth.transport(tr), Timeout: b.timeout},
 		url:         b.url,
-		user:        b.user,
-		pass:        b.pass,
+		auth:        b.auth,
 		impersonate: user,
 		debug:       b.debug,
 		logf:        b.logf,
@@ -65,8 +65,7 @@ func (b *ewsBackend) Connect(_ context.Context, user string) (Endpoint, error) {
 type ewsClient struct {
 	http        *http.Client
 	url         string
-	user        string
-	pass        string
+	auth        ewsAuth
 	impersonate string
 	debug       bool
 	logf        func(string, ...any)
@@ -79,10 +78,11 @@ const soapEnvelope = `<?xml version="1.0" encoding="utf-8"?>
 </soap:Envelope>`
 
 // call wraps body in a SOAP envelope (with ExchangeImpersonation) and POSTs it.
-// If c.debug is set, the full request (as Basic user c.user, impersonating
+// If c.debug is set, the full request (as c.auth.who(), impersonating
 // c.impersonate) and response are logged via c.logf. The Authorization header
-// itself (Basic base64(user:pass)) is never logged - only the SOAP body, which
-// carries no credentials, so this is safe to share unlike IMAP wire debug.
+// itself (Basic credentials, NTLM messages or the OAuth2 token) is never
+// logged - only the SOAP body, which carries no credentials, so this is safe
+// to share unlike IMAP wire debug.
 func (c *ewsClient) call(ctx context.Context, body string) ([]byte, error) {
 	imp := ""
 	if c.impersonate != "" {
@@ -91,32 +91,58 @@ func (c *ewsClient) call(ctx context.Context, body string) ([]byte, error) {
 	env := fmt.Sprintf(soapEnvelope, imp, body)
 
 	if c.debug {
-		c.logf("ews %s: request as %s, impersonating %s:\n%s", c.url, c.user, c.impersonate, env)
+		c.logf("ews %s: request as %s, impersonating %s:\n%s", c.url, c.auth.who(), c.impersonate, env)
 	}
 
+	for attempt := 0; ; attempt++ {
+		status, data, retry, err := c.post(ctx, env)
+		if err != nil {
+			return nil, err
+		}
+		if retry && attempt == 0 {
+			if c.debug {
+				c.logf("ews %s: HTTP 401 with %s, retrying with fresh credentials", c.url, c.auth.who())
+			}
+			continue
+		}
+		if status != http.StatusOK {
+			if status == http.StatusUnauthorized {
+				return nil, fmt.Errorf("EWS %s: HTTP 401 unauthorized as %s: %s", c.url, c.auth.who(), snippet(data))
+			}
+			return nil, fmt.Errorf("EWS %s: HTTP %d: %s", c.url, status, snippet(data))
+		}
+		return data, nil
+	}
+}
+
+// post sends one authorized request. retry reports a 401 the auth scheme
+// wants retried (a stale cached token).
+func (c *ewsClient) post(ctx context.Context, env string) (status int, data []byte, retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, strings.NewReader(env))
 	if err != nil {
-		return nil, err
+		return 0, nil, false, err
 	}
 	req.Header.Set("Content-Type", "text/xml; charset=utf-8")
-	req.SetBasicAuth(c.user, c.pass)
+	if err := c.auth.authorize(ctx, req, c.impersonate); err != nil {
+		return 0, nil, false, fmt.Errorf("EWS %s: %w", c.url, err)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if c.debug {
 			c.logf("ews %s: request failed: %v", c.url, err)
 		}
-		return nil, fmt.Errorf("EWS %s: %w", c.url, err)
+		return 0, nil, false, fmt.Errorf("EWS %s: %w", c.url, err)
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	data, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if c.debug {
 		c.logf("ews %s: response HTTP %d:\n%s", c.url, resp.StatusCode, data)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("EWS %s: HTTP %d: %s", c.url, resp.StatusCode, snippet(data))
+	if resp.StatusCode == http.StatusUnauthorized {
+		retry = c.auth.rejected(req)
 	}
-	return data, nil
+	return resp.StatusCode, data, retry, nil
 }
 
 func xesc(s string) string {

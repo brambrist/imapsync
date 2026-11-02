@@ -236,14 +236,14 @@ func TestEWSDebugLogsRequestAndResponse(t *testing.T) {
 	defer mu.Unlock()
 	var sawRequest, sawResponse bool
 	for _, l := range lines {
-		if strings.Contains(l, "request as svc, impersonating ivanov@corp.ru") && strings.Contains(l, "FindItem") {
+		if strings.Contains(l, "request as basic svc, impersonating ivanov@corp.ru") && strings.Contains(l, "FindItem") {
 			sawRequest = true
 		}
 		if strings.Contains(l, "response HTTP 200") && strings.Contains(l, "ResponseClass") {
 			sawResponse = true
 		}
 		// never log the Basic auth credential itself.
-		if strings.Contains(l, "pw") && !strings.Contains(l, "request as svc") {
+		if strings.Contains(l, "pw") && !strings.Contains(l, "request as basic svc") {
 			t.Errorf("debug log line looks like it leaked the password: %q", l)
 		}
 	}

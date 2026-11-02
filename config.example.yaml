@@ -23,7 +23,21 @@ server_b:
 #   type: ews
 #   ews_url: https://exch.corp.ru/EWS/Exchange.asmx   # or just host
 #   master_user: svc_sync           # account with the ApplicationImpersonation role
-#   master_pass: "SECRET"           # auth: Basic only (O365 needs OAuth2)
+#   master_pass: "SECRET"
+#   ews_auth: basic                 # basic (default) | ntlm | oauth2
+#                                   # ntlm: master_user as 'CORP\svc_sync' or a UPN
+#
+# Exchange Online (O365) - OAuth2 client credentials instead of master_user/
+# master_pass (an Azure AD app with the full_access_as_app permission):
+# server_b:
+#   type: ews
+#   ews_url: https://outlook.office365.com/EWS/Exchange.asmx
+#   ews_auth: oauth2
+#   oauth_tenant: corp.onmicrosoft.com   # tenant ID or domain
+#   oauth_client_id: 00000000-0000-0000-0000-000000000000
+#   oauth_client_secret: "SECRET"
+#   # oauth_token_url: ...   # override (default: login.microsoftonline.com v2.0 for the tenant)
+#   # oauth_scope: ...       # override (default: https://outlook.office365.com/.default)
 
 # A local PST/OST archive is a read-only source (one-way import). Set the other
 # side to a writable endpoint and direction to a-to-b (or b-to-a):

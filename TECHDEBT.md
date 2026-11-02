@@ -27,9 +27,19 @@ pst`).
 
 EWS - what's left to polish:
 
-- **Auth is Basic only.** O365 disabled it - OAuth2 is needed (client
-  credentials: tenant/client_id/client_secret + the `full_access_as_app` scope).
-  NTLM for old on-prem - the `go-ntlmssp` transport.
+- **Auth [DONE].** `ews_auth: basic | ntlm | oauth2` (`endpoint/ews_auth.go`).
+  NTLM via `go-ntlmssp` (no Basic fallback); OAuth2 client credentials with a
+  per-backend token cache (refresh 2m before expiry, one retry on 401 with a
+  fresh token) and `X-AnchorMailbox`. Tested against `ewstest`, which verifies
+  NTLMv2 responses for real (wrong password -> 401) and serves a token
+  endpoint. Not done: certificate credentials for OAuth2 (client assertion JWT)
+  instead of a secret; Kerberos/Negotiate; a token endpoint behind a private
+  CA (it uses the system trust store, not `ca_cert`). Not tested against a real
+  Exchange/Entra ID.
+- **EWS in Exchange Online is being retired** (phased from 2026-10-01, removed
+  2027-04-01; needs `EwsEnabled` + the app on the AppID allow list meanwhile).
+  Long-term O365 access needs a Microsoft Graph endpoint (`type: graph`) -
+  not started.
 - **INTERNALDATE is not carried** - `CreateItem` with `MimeContent` sets the
   current date; the extended MAPI property `PR_MESSAGE_DELIVERY_TIME`
   (0x0E060040) is needed.

@@ -488,3 +488,52 @@ func TestRejectsBadDuration(t *testing.T) {
 		t.Fatal("expected a duration parse error")
 	}
 }
+
+func TestEWSAuthValidation(t *testing.T) {
+	cfg := func(serverA string) string {
+		return "server_a: " + serverA + `
+server_b: {type: maildir, root: /m/%u}
+users:
+  - {name: u1, user_a: a1, user_b: b1}
+  - {name: u2, user_a: a2, user_b: b2}
+folders: [{a: Sent, b: Sent}]
+workers: 1
+`
+	}
+	const ews = `type: ews, ews_url: "https://x/EWS/Exchange.asmx"`
+	cases := []struct {
+		name, server string
+		ok           bool
+	}{
+		{"basic default", `{` + ews + `, master_user: m, master_pass: p}`, true},
+		{"ntlm", `{` + ews + `, ews_auth: ntlm, master_user: 'CORP\svc', master_pass: p}`, true},
+		{"ntlm without password", `{` + ews + `, ews_auth: ntlm, master_user: m}`, false},
+		{"oauth2 tenant", `{` + ews + `, ews_auth: oauth2, oauth_tenant: corp.onmicrosoft.com, oauth_client_id: c, oauth_client_secret: s}`, true},
+		{"oauth2 token url", `{` + ews + `, ews_auth: oauth2, oauth_token_url: "https://adfs/token", oauth_client_id: c, oauth_client_secret: s}`, true},
+		{"oauth2 without tenant", `{` + ews + `, ews_auth: oauth2, oauth_client_id: c, oauth_client_secret: s}`, false},
+		{"oauth2 without secret", `{` + ews + `, ews_auth: oauth2, oauth_tenant: t, oauth_client_id: c}`, false},
+		{"oauth fields with basic", `{` + ews + `, master_user: m, master_pass: p, oauth_client_id: c}`, false},
+		{"unknown scheme", `{` + ews + `, ews_auth: kerberos, master_user: m, master_pass: p}`, false},
+		{"ews_auth on imap", `{host: h, port: 993, master_user: m, master_pass: p, ews_auth: ntlm}`, false},
+	}
+	for _, c := range cases {
+		_, err := Load(writeTemp(t, cfg(c.server)))
+		if c.ok && err != nil {
+			t.Errorf("%s: unexpected error: %v", c.name, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("%s: expected an error", c.name)
+		}
+	}
+}
+
+func TestOAuthTokenEndpoint(t *testing.T) {
+	s := Server{OAuthTenant: "corp.onmicrosoft.com"}
+	if got := s.OAuthTokenEndpoint(); got != "https://login.microsoftonline.com/corp.onmicrosoft.com/oauth2/v2.0/token" {
+		t.Errorf("tenant endpoint = %q", got)
+	}
+	s.OAuthTokenURL = "https://adfs/token"
+	if got := s.OAuthTokenEndpoint(); got != "https://adfs/token" {
+		t.Errorf("override = %q", got)
+	}
+}

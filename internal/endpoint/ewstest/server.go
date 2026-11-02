@@ -28,6 +28,19 @@ type Server struct {
 	items   map[string][]byte
 	next    int
 	LastImp string // last ExchangeImpersonation
+
+	// Authentication (see auth.go).
+	mode               authMode
+	ntlmUser, ntlmPass string
+	ntlmChal           map[string][8]byte // remote addr -> pending challenge
+	ntlmConns          map[string]bool    // remote addr -> authenticated connection
+	clientID, secret   string
+	validToken         string
+
+	NTLMHandshakes int    // completed NTLM handshakes
+	TokenRequests  int    // hits on the OAuth2 token endpoint
+	LastScope      string // scope of the last token request
+	LastAnchor     string // X-AnchorMailbox of the last bearer request
 }
 
 var (
@@ -66,7 +79,7 @@ func NewTLS(t *testing.T, seed map[string]string, tlsCfg *tls.Config) *Server {
 }
 
 func newServer(seed map[string]string) *Server {
-	s := &Server{items: map[string][]byte{}}
+	s := &Server{items: map[string][]byte{}, ntlmChal: map[string][8]byte{}, ntlmConns: map[string]bool{}}
 	for id, b := range seed {
 		s.items[id] = []byte(b)
 	}
@@ -88,8 +101,11 @@ func (s *Server) Add(id, raw string) {
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := r.BasicAuth(); !ok {
-		http.Error(w, "no auth", http.StatusUnauthorized)
+	if r.URL.Path == "/token" {
+		s.token(w, r)
+		return
+	}
+	if !s.authorized(w, r) {
 		return
 	}
 	raw, _ := io.ReadAll(r.Body)

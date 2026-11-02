@@ -138,11 +138,11 @@ for both transports - the exact thing to reach for when access looks right
 
 - **IMAP** - the server's advertised `CAPABILITY` list, plus the raw wire
   traffic of the connection (via go-imap's `SetDebug`).
-- **EWS** - the full SOAP request (as which Basic-auth user, impersonating
+- **EWS** - the full SOAP request (as which auth identity, impersonating
   which mailbox) and the full SOAP response, including the exact
   `ResponseCode`/`MessageText` Exchange returns - e.g. `ErrorImpersonateUserDenied`
   (the `ApplicationImpersonation` role isn't applied/scoped to that mailbox) vs.
-  `ErrorAccessDenied` vs. a plain HTTP 401 (Basic auth itself rejected). Those
+  `ErrorAccessDenied` vs. a plain HTTP 401 (the credentials themselves rejected). Those
   three look identical as a generic "unauthorized" - the debug log tells them
   apart.
 
@@ -150,7 +150,8 @@ for both transports - the exact thing to reach for when access looks right
 payload - the master account's credentials, base64-encoded but trivially
 decodable. Treat debug output as a secret, the same way you would Dovecot's
 `auth_debug_passwords`. The EWS debug log never includes the `Authorization`
-header, so it's safe to share as-is.
+header (Basic credentials, NTLM messages or the OAuth2 token), so it's safe to
+share as-is.
 
 ## Configuration
 
@@ -199,8 +200,11 @@ Exchange -> Dovecot, etc.):
 - `ews` - `ews_url` (or `host` -> `https://<host>/EWS/Exchange.asmx`),
   `master_user`/`master_pass` is a service account with the
   `ApplicationImpersonation` role; impersonation via the `ExchangeImpersonation`
-  SOAP header. Auth: **Basic only** (O365 needs OAuth2 - see `TECHDEBT.md`).
-  `\Seen` is carried, `INTERNALDATE` is not.
+  SOAP header. `ews_auth`: `basic` (default) or `ntlm` with
+  `master_user`/`master_pass`, or `oauth2` (client credentials:
+  `oauth_tenant`/`oauth_client_id`/`oauth_client_secret`, for Exchange Online -
+  see "Exchange Online (OAuth2)" below). `\Seen` is carried, `INTERNALDATE` is
+  not.
 - `pst` - `root`: path template to a local PST/OST archive (same placeholders).
   **Read-only**: it can only be a sync source, so pair it with a writable
   endpoint and set `direction: a-to-b` (or `b-to-a`). A one-way Outlook import.
@@ -316,9 +320,43 @@ Get-ManagementRoleAssignment -RoleAssignee "svc-imapsync" | Format-List
 Get-WebServicesVirtualDirectory | Format-List Name,InternalUrl,ExternalUrl
 ```
 
-`master_user`/`master_pass` = `svc-imapsync`'s own credentials. Auth is
-**Basic only** here (on-prem); Exchange Online needs OAuth2, which this project
-does not implement yet (see `TECHDEBT.md`).
+`master_user`/`master_pass` = `svc-imapsync`'s own credentials. With
+`ews_auth: basic` (default) the EWS virtual directory must have Basic
+authentication enabled; if it only allows Windows authentication (common on
+hardened installs), set `ews_auth: ntlm` and `master_user` to `CORP\svc-imapsync`
+or the UPN. imapsync never falls back from NTLM to Basic on its own.
+
+```powershell
+# Which methods the EWS virtual directory accepts:
+Get-WebServicesVirtualDirectory | Format-List Name,BasicAuthentication,WindowsAuthentication
+```
+
+**Exchange Online (OAuth2)** - `ews_auth: oauth2`, app-only access via the
+client credentials grant. No `master_user`/`master_pass`; instead:
+
+1. Entra ID -> App registrations -> New registration (single tenant).
+2. API permissions -> Add -> *APIs my organization uses* -> **Office 365
+   Exchange Online** -> Application permissions -> `full_access_as_app` ->
+   Grant admin consent.
+3. Certificates & secrets -> New client secret -> `oauth_client_secret`.
+   The app (client) ID -> `oauth_client_id`, the tenant ID or
+   `corp.onmicrosoft.com` -> `oauth_tenant`.
+4. `ews_url: https://outlook.office365.com/EWS/Exchange.asmx`.
+
+`full_access_as_app` reaches **every** mailbox in the tenant - the app's secret
+is as powerful as an org-wide impersonation grant, so store it accordingly.
+Impersonation still goes through the `ExchangeImpersonation` SOAP header (plus
+the `X-AnchorMailbox` HTTP header); the `ApplicationImpersonation` role is not
+used. The token is cached per server and refreshed before expiry; a token
+rejected early (revoked) is dropped and refetched once.
+
+**EWS retirement in Exchange Online.** Microsoft is retiring EWS in Exchange
+Online: phased disablement started 2026-10-01, EWS is permanently removed on
+2027-04-01. Until then it works only while the tenant has `EwsEnabled` set and
+the app's client ID on the EWS AppID allow list (`Get-OrganizationConfig |
+Format-List EwsEnabled`). OAuth2 here is a bridge for migrations off Exchange
+Online before that date, not a long-term path. On-prem Exchange Server is not
+affected.
 
 **IMAP4 (`type: imap`)** - enable the protocol per mailbox and make sure the
 service is running:
@@ -518,7 +556,7 @@ that repeated passes are idempotent.
 ## Known limitations
 
 The tech-debt list is in [`TECHDEBT.md`](TECHDEBT.md). Key open items: secrets
-only in plaintext YAML (no `${VAR}` / file / secret manager); EWS auth is Basic
-only (no OAuth2 for O365); PST import reconstructs MIME from MAPI properties, so
+only in plaintext YAML (no `${VAR}` / file / secret manager); EWS in Exchange
+Online is retired on 2027-04-01 (no Graph endpoint yet); PST import reconstructs MIME from MAPI properties, so
 DKIM signatures break and RTF-only bodies stay as RTF markup; ANSI (older 32-bit)
 PST files are not supported by the reader.

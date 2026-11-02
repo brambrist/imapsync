@@ -42,6 +42,16 @@ const (
 	EndpointPST     = "pst"     // local PST/OST archive, read-only (import source)
 )
 
+// EWS authentication schemes (Server.EWSAuth).
+const (
+	EWSAuthBasic  = "basic"  // HTTP Basic with master_user/master_pass (default)
+	EWSAuthNTLM   = "ntlm"   // NTLM with master_user/master_pass (on-prem Exchange)
+	EWSAuthOAuth2 = "oauth2" // OAuth2 client credentials (Exchange Online / O365)
+)
+
+// DefaultOAuthScope is the client-credentials scope for EWS in Exchange Online.
+const DefaultOAuthScope = "https://outlook.office365.com/.default"
+
 // Server describes one sync endpoint.
 //
 //   - type: imap - Host/Port/MasterUser/MasterPass; impersonation via SASL PLAIN
@@ -52,7 +62,11 @@ const (
 //     placeholders). Read-only: it can only be a sync source (one-way import).
 //   - type: ews - EWSUrl (or Host), MasterUser/MasterPass is a service account
 //     with the ApplicationImpersonation role; impersonation via the SOAP header
-//     ExchangeImpersonation (PrimarySmtpAddress = user_a/user_b). Auth: Basic.
+//     ExchangeImpersonation (PrimarySmtpAddress = user_a/user_b). Auth is
+//     EWSAuth: basic (default) or ntlm with MasterUser/MasterPass, or oauth2 -
+//     an Azure AD app registration with the full_access_as_app application
+//     permission, client credentials OAuthTenant/OAuthClientID/
+//     OAuthClientSecret (MasterUser/MasterPass are then unused).
 //
 // MinTLSVersion/MaxTLSVersion bound the TLS protocol version for this server's
 // connection (imap and ews only). Both are optional; the Go default is
@@ -77,6 +91,24 @@ type Server struct {
 	MinTLSVersion string `yaml:"min_tls_version"` // "1.0" | "1.1" | "1.2" | "1.3"
 	MaxTLSVersion string `yaml:"max_tls_version"`
 	CACert        string `yaml:"ca_cert"` // path to a PEM file: the server's self-signed cert, or its CA
+
+	// EWS authentication (type: ews only).
+	EWSAuth           string `yaml:"ews_auth"`            // "" (= basic) | basic | ntlm | oauth2
+	OAuthTenant       string `yaml:"oauth_tenant"`        // Azure AD tenant ID or domain
+	OAuthClientID     string `yaml:"oauth_client_id"`     // app registration (client) ID
+	OAuthClientSecret string `yaml:"oauth_client_secret"` // app client secret
+	OAuthTokenURL     string `yaml:"oauth_token_url"`     // override; else the Microsoft identity platform v2.0 endpoint for the tenant
+	OAuthScope        string `yaml:"oauth_scope"`         // override; else DefaultOAuthScope
+}
+
+// OAuthTokenEndpoint returns the token URL for oauth2: the explicit
+// oauth_token_url, or the Microsoft identity platform v2.0 endpoint for
+// oauth_tenant.
+func (s Server) OAuthTokenEndpoint() string {
+	if u := strings.TrimSpace(s.OAuthTokenURL); u != "" {
+		return u
+	}
+	return "https://login.microsoftonline.com/" + strings.TrimSpace(s.OAuthTenant) + "/oauth2/v2.0/token"
 }
 
 // FolderPair is an explicit mapping of a folder name on server A to one on
@@ -430,6 +462,32 @@ func (c *Config) ValidateEntities() error {
 	return nil
 }
 
+func (s Server) hasOAuth() bool {
+	return s.OAuthTenant != "" || s.OAuthClientID != "" || s.OAuthClientSecret != "" || s.OAuthTokenURL != "" || s.OAuthScope != ""
+}
+
+func validateEWSAuth(name string, s Server) error {
+	switch s.EWSAuth {
+	case "", EWSAuthBasic, EWSAuthNTLM:
+		if s.hasOAuth() {
+			return fmt.Errorf("%s: oauth_* are set but ews_auth is not %q", name, EWSAuthOAuth2)
+		}
+		if strings.TrimSpace(s.MasterUser) == "" || strings.TrimSpace(s.MasterPass) == "" {
+			return fmt.Errorf("%s: type ews - master_user/master_pass are required (service account with ApplicationImpersonation)", name)
+		}
+	case EWSAuthOAuth2:
+		if strings.TrimSpace(s.OAuthClientID) == "" || strings.TrimSpace(s.OAuthClientSecret) == "" {
+			return fmt.Errorf("%s: ews_auth oauth2 - oauth_client_id/oauth_client_secret are required", name)
+		}
+		if strings.TrimSpace(s.OAuthTenant) == "" && strings.TrimSpace(s.OAuthTokenURL) == "" {
+			return fmt.Errorf("%s: ews_auth oauth2 - oauth_tenant (or oauth_token_url) is required", name)
+		}
+	default:
+		return fmt.Errorf("%s: ews_auth %q is not supported (%q, %q, %q)", name, s.EWSAuth, EWSAuthBasic, EWSAuthNTLM, EWSAuthOAuth2)
+	}
+	return nil
+}
+
 func validateServer(name string, s Server) error {
 	switch s.Type {
 	case "", EndpointIMAP:
@@ -457,11 +515,14 @@ func validateServer(name string, s Server) error {
 		if strings.TrimSpace(s.EWSUrl) == "" && strings.TrimSpace(s.Host) == "" {
 			return fmt.Errorf("%s: type ews - ews_url or host is required", name)
 		}
-		if strings.TrimSpace(s.MasterUser) == "" || strings.TrimSpace(s.MasterPass) == "" {
-			return fmt.Errorf("%s: type ews - master_user/master_pass are required (service account with ApplicationImpersonation)", name)
+		if err := validateEWSAuth(name, s); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("%s: type %q is not supported (%q, %q, %q, %q)", name, s.Type, EndpointIMAP, EndpointMaildir, EndpointEWS, EndpointPST)
+	}
+	if s.Type != EndpointEWS && (s.EWSAuth != "" || s.hasOAuth()) {
+		return fmt.Errorf("%s: ews_auth/oauth_* are only valid for type ews", name)
 	}
 
 	minV, err := ParseTLSVersion(s.MinTLSVersion)
